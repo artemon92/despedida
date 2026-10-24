@@ -1155,10 +1155,11 @@ function renderTasks() {
   head.hidden = !total;
   if (total) {
     const late = state.tasks.filter(t => !t.done && t.due && daysUntil(t.due) < 0).length;
-    head.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><b>${done} de ${total} hechas</b>${late ? `<span class="pill bad">${late} ${late === 1 ? "atrasada" : "atrasadas"}</span>` : done === total ? `<span class="pill ok">¡Todo hecho!</span>` : ""}</div><div class="progress"><i style="width:${done / total * 100}%"></i></div>`;
+    head.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><b>${done} de ${total} hechas</b>${late ? `<span class="pill bad">${late} ${late === 1 ? "atrasada" : "atrasadas"}</span>` : done === total ? `<span class="pill ok">¡Todo hecho!</span>` : ""}</div><div class="progress"><i style="width:${done / total * 100}%"></i></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" type="button" data-act="loadTemplate">Añadir tareas típicas</button><button class="btn sm danger" type="button" data-act="clearTasks">Borrar tareas…</button></div>`;
   }
   if (!total) {
-    el.innerHTML = `<div class="empty"><h3>Lista de tareas</h3><p>Apunta lo que queda por hacer y ve tachándolo. Puedes empezar con una lista típica para una despedida${state.eventDate ? ", con fechas calculadas a partir del día del evento" : " (si pones la fecha del evento en Ajustes, las tareas llevarán fecha)"}.</p><button class="btn primary" type="button" data-act="loadTemplate">Cargar lista típica</button></div>`;
+    el.innerHTML = `<div class="empty"><h3>Lista de tareas</h3><p>Apunta lo que queda por hacer y ve tachándolo. Puedes empezar con una lista típica para una despedida${state.eventDate ? ", con fechas calculadas a partir del día del evento" : " (si pones la fecha del evento en Ajustes, las tareas llevarán fecha)"}.</p><button class="btn primary" type="button" data-act="loadTemplate">Elegir tareas típicas</button></div>`;
     return;
   }
   const byDue = (a, b) => a.due.localeCompare(b.due);
@@ -1173,6 +1174,53 @@ function renderTasks() {
   };
   el.innerHTML = [["Atrasadas", late, "bad"], ["Próximas", next, ""], ["Sin fecha", nodate, ""], ["Hechas", doneL, ""]]
     .filter(g => g[1].length).map(([h, l, c]) => `<div class="group-h ${c}">${h} · ${l.length}</div>${l.map(row).join("")}`).join("");
+}
+function modalTemplate() {
+  const have = new Set(state.tasks.map(t => norm(t.title)));
+  const items = TASK_TEMPLATE.map(([off, title], i) => ({i, title, due: state.eventDate ? addDays(state.eventDate, off) : "", exists: have.has(norm(title))}));
+  const avail = items.filter(x => !x.exists);
+  const m = openModal("Tareas típicas", `
+    <p style="margin:0">Marca las que quieras añadir a tu lista.${state.eventDate ? " La fecha de cada una se calcula a partir del día del evento; luego puedes cambiarla." : " Si pones la fecha del evento en Ajustes, cada tarea llevará su fecha."}</p>
+    ${avail.length ? `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button class="btn sm" type="button" id="tplAll">Marcar todas</button><button class="btn sm" type="button" id="tplNone">Desmarcar todas</button><span class="small muted" id="tplCount"></span></div>` : ""}
+    <div class="who"><div class="who-list" id="tplList" style="max-height:none">${items.map(x => `<label style="${x.exists ? "opacity:.55;cursor:default" : ""}"><input type="checkbox" data-tpl="${x.i}" ${x.exists ? "disabled checked" : ""}><span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="overflow-wrap:anywhere">${esc(x.title)}</span>${x.exists ? `<span class="small muted">Ya está en tu lista</span>` : x.due ? `<span class="small muted">${fmtDate(x.due)} · ${relDays(x.due)}</span>` : ""}</span></label>`).join("")}</div></div>`,
+    `<button class="btn" type="button" data-close>Cancelar</button>${avail.length ? `<button class="btn primary" type="button" id="tplGo">Añadir</button>` : ""}`,
+    m => {
+      if (!avail.length) return;
+      const boxes = () => $$("[data-tpl]:not([disabled])", m);
+      const count = () => { const n = boxes().filter(b => b.checked).length; m.querySelector("#tplCount").textContent = `${n} ${n === 1 ? "marcada" : "marcadas"}`; m.querySelector("#tplGo").disabled = !n; m.querySelector("#tplGo").textContent = n ? `Añadir ${n}` : "Añadir"; };
+      m.querySelector("#tplList").addEventListener("change", count);
+      m.querySelector("#tplAll").onclick = () => { boxes().forEach(b => b.checked = true); count(); };
+      m.querySelector("#tplNone").onclick = () => { boxes().forEach(b => b.checked = false); count(); };
+      count();
+      m.querySelector("#tplGo").onclick = () => {
+        const pick = boxes().filter(b => b.checked).map(b => items[+b.dataset.tpl]);
+        if (!pick.length) return;
+        commit(() => { pick.forEach(x => state.tasks.push({id: uid(), title: x.title, due: x.due, done: false, note: ""})); });
+        closeModal(); toast(`${pick.length} ${pick.length === 1 ? "tarea añadida" : "tareas añadidas"}`);
+      };
+    });
+}
+function modalClearTasks() {
+  const total = state.tasks.length, done = state.tasks.filter(t => t.done).length;
+  let mode = done ? "done" : "all";
+  const m = openModal("Borrar tareas", `
+    <div class="seg" id="clrMode" style="display:flex">${done ? `<button type="button" data-v="done" aria-pressed="true" style="flex:1">Solo las hechas (${done})</button>` : ""}<button type="button" data-v="all" aria-pressed="${!done}" style="flex:1">Todas (${total})</button></div>
+    <div class="confirm"><span id="clrText"></span><span class="small">Esto no se puede deshacer.</span></div>`,
+    `<button class="btn" type="button" data-close>Cancelar</button><button class="btn danger solid" type="button" id="clrGo"></button>`,
+    m => {
+      const draw = () => {
+        const n = mode === "done" ? done : total;
+        m.querySelector("#clrText").innerHTML = mode === "done" ? `Se borrarán las <b>${done}</b> tareas ya hechas. Las pendientes se quedan.` : `Se borrarán <b>todas</b> las tareas (${total}), también las pendientes.`;
+        m.querySelector("#clrGo").textContent = `Borrar ${n} ${n === 1 ? "tarea" : "tareas"}`;
+      };
+      m.querySelector("#clrMode").onclick = ev => { const b = ev.target.closest("button"); if (!b) return; mode = b.dataset.v; $$("#clrMode button", m).forEach(x => x.setAttribute("aria-pressed", String(x === b))); draw(); };
+      draw();
+      m.querySelector("#clrGo").onclick = () => {
+        const n = mode === "done" ? done : total;
+        commit(() => { state.tasks = mode === "done" ? state.tasks.filter(t => !t.done) : []; });
+        closeModal(); toast(`${n} ${n === 1 ? "tarea borrada" : "tareas borradas"}`);
+      };
+    });
 }
 function modalTask(id) {
   const t = state.tasks.find(x => x.id === id); if (!t) return;
@@ -1609,10 +1657,8 @@ document.addEventListener("click", ev => {
     if (a === "cancelSel") { ui.selected = null; renderTables(); }
     if (a === "unseatSel" && ui.selected) unseat(ui.selected);
     if (a === "copyRestaurant") copyText(restaurantText(), "Recuento copiado. Pégalo en WhatsApp o en un correo al restaurante.", "Recuento para el restaurante");
-    if (a === "loadTemplate") {
-      commit(() => { TASK_TEMPLATE.forEach(([off, title]) => state.tasks.push({id: uid(), title, due: state.eventDate ? addDays(state.eventDate, off) : "", done: false, note: ""})); });
-      toast("Lista cargada. Borra o cambia lo que no necesites.");
-    }
+    if (a === "loadTemplate") modalTemplate();
+    if (a === "clearTasks") modalClearTasks();
     return;
   }
   const rv = t.closest("[data-rsvp]");
