@@ -489,7 +489,7 @@ html,body{margin:0}
         <button type="button" data-v="plan" aria-pressed="true">Plano</button>
         <button type="button" data-v="list" aria-pressed="false">Lista</button>
       </div>
-      <button class="btn" id="btnSuggest" type="button">Crear mesas automáticamente</button>
+      <button class="btn" id="btnSuggest" type="button">Repartir mesas por servicio</button>
       <button class="btn primary" id="btnAddTable" type="button">+ Añadir mesa</button>
     </div>
     <div id="selbar" class="selbar" hidden></div>
@@ -1006,7 +1006,7 @@ function renderTables() {
   // plano
   const grid = $("#tablesGrid");
   if (!state.tables.length) {
-    grid.innerHTML = `<div class="panel" style="grid-column:1/-1">${emptyState("Todavía no hay mesas", state.people.length ? `Con ${state.people.length} asistentes puedo proponerte cuántas mesas de 8, 9 o 10 necesitas, o puedes añadirlas una a una.` : "Añade mesas de 8, 9 o 10 personas. Cuando tengas la lista de asistentes, también puedo crearlas automáticamente.", state.people.length ? "Crear mesas automáticamente" : "Añadir mesa", state.people.length ? "suggest" : "addTable")}</div>`;
+    grid.innerHTML = `<div class="panel" style="grid-column:1/-1">${emptyState("Todavía no hay mesas", state.people.length ? `Con ${state.people.length} asistentes puedo proponerte las mesas de 8, 9 o 10 y sentar a la gente junta por servicio, o puedes añadirlas una a una.` : "Añade mesas de 8, 9 o 10 personas. Cuando tengas la lista de asistentes, también puedo repartirlas automáticamente.", state.people.length ? "Repartir mesas por servicio" : "Añadir mesa", state.people.length ? "suggest" : "addTable")}</div>`;
   } else {
     grid.innerHTML = state.tables.map(t => {
       const ppl = seatedIn(t.id);
@@ -1664,35 +1664,103 @@ function planTables(need) {
   while (sum < need) { caps[i % n]++; sum++; i++; }
   return caps;
 }
+// Reparto por servicio: los grupos grandes ocupan mesas enteras (a partes iguales),
+// los pequeños van juntos sin separarse y quien no tiene servicio rellena huecos.
+function planSeating(people) {
+  const bins = state.tables.map(t => ({t, cap: t.cap, base: seatedIn(t.id).length, list: []})).filter(b => b.cap > b.base);
+  const need = people.length - bins.reduce((s, b) => s + b.cap - b.base, 0);
+  const nNew = need > 0 ? Math.ceil(need / 10) : 0, c = nNew ? Math.ceil(need / nNew) : 0;
+  for (let i = 0; i < nNew; i++) bins.push({t: null, cap: c, base: 0, list: []});
+  const room = b => b.cap - b.base - b.list.length;
+  const groups = new Map(), fillers = [];
+  people.slice().sort(byName).forEach(p => {
+    const k = norm(p.group).trim();
+    if (!k) { fillers.push(p); return; }
+    if (!groups.has(k)) groups.set(k, {label: p.group.trim(), list: []});
+    groups.get(k).list.push(p);
+  });
+  const left = [];
+  [...groups.values()].sort((a, b) => b.list.length - a.list.length).forEach(g => {
+    const rest = g.list.slice();
+    while (rest.length) {
+      const fit = bins.filter(b => room(b) >= rest.length);
+      if (fit.length) { fit.reduce((a, b) => room(b) < room(a) ? b : a).list.push(...rest.splice(0)); break; }
+      const maxRoom = Math.max(0, ...bins.map(room));
+      if (!maxRoom) { left.push(...rest.splice(0)); break; }
+      const size = Math.ceil(rest.length / Math.ceil(rest.length / maxRoom));
+      const b = bins.filter(x => room(x) >= size).reduce((a, x) => !a || room(x) < room(a) ? x : a, null);
+      b.list.push(...rest.splice(0, size));
+    }
+  });
+  fillers.forEach(p => {
+    const b = bins.reduce((a, x) => !a || room(x) > room(a) ? x : a, null);
+    if (b && room(b) > 0) b.list.push(p); else left.push(p);
+  });
+  const used = bins.filter(b => b.list.length);
+  used.forEach(b => { if (!b.t) b.cap = Math.min(10, Math.max(8, b.list.length)); });
+  return {bins: used, left};
+}
+function seatingSummary(list) {
+  const m = new Map();
+  list.forEach(p => { const k = norm(p.group).trim(), l = k ? p.group.trim() : "Sin servicio"; m.set(k, {l, n: (m.get(k)?.n || 0) + 1, k}); });
+  return [...m.values()].sort((a, b) => (a.k ? 0 : 1) - (b.k ? 0 : 1) || b.n - a.n).map(x => `${esc(x.l)} ${x.n}`).join(" · ");
+}
 function modalSuggest() {
-  const free = state.people.filter(isFree);
-  const freeSeats = state.tables.reduce((s, t) => s + t.cap - seatedIn(t.id).length, 0);
-  const need = free.length - freeSeats;
-  const caps = planTables(need);
-  const count = c => caps.filter(x => x === c).length;
-  const desc = [10, 9, 8].filter(c => count(c)).map(c => `<b>${count(c)}</b> ${count(c) === 1 ? "mesa" : "mesas"} de ${c}`).join(", ");
-  openModal("Crear mesas automáticamente", `
-    <p style="margin:0">Hay <b>${free.length}</b> personas sin mesa${state.tables.length ? ` y <b>${freeSeats}</b> sillas libres en las mesas que ya tienes` : ""}.</p>
-    ${caps.length ? `<div class="panel" style="padding:14px 16px;background:var(--accent-soft);border-color:transparent"><span class="small muted">Propuesta</span><div style="font-size:1.1rem">${desc}</div><span class="small muted">${caps.length} mesas nuevas · ${caps.reduce((a, b) => a + b, 0)} sillas. Se reparten para que ninguna mesa quede medio vacía.</span></div>`
-      : `<p class="banner" style="margin:0">${free.length ? "Ya tienes sillas suficientes para todos. No hace falta crear mesas nuevas." : "Todo el mundo tiene mesa."}</p>`}
-    ${free.length ? `<label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="sgFill" style="margin-top:3px"><span><b>Sentar también a la gente</b><br><span class="small muted">Coloca a las personas sin mesa en los huecos libres, intentando juntar a las del mismo servicio. Después puedes moverlas a mano.</span></span></label>` : ""}`,
-    `<button class="btn" type="button" data-close>Cancelar</button>${caps.length || free.length ? `<button class="btn primary" type="button" id="sgGo">${caps.length ? "Crear mesas" : "Sentar a la gente"}</button>` : ""}`,
+  let who = state.people.some(p => isFree(p) && p.rsvp === "pending") ? "all" : "yes";
+  const freeOf = w => state.people.filter(p => isFree(p) && (w === "all" || p.rsvp === "yes"));
+  const nAll = freeOf("all").length, nYes = freeOf("yes").length;
+  openModal("Repartir mesas", `
+    ${nAll ? `<div class="field"><span class="lbl">¿A quién quieres sentar?</span><div class="seg" id="sgWho" style="display:flex"><button type="button" data-v="all" style="flex:1">Confirmados y pendientes (${nAll})</button><button type="button" data-v="yes" style="flex:1">Solo confirmados (${nYes})</button></div></div>
+    <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="sgFill" checked style="margin-top:3px"><span><b>Sentar a la gente por servicio</b><br><span class="small muted">Junta a las personas del mismo servicio. Los servicios pequeños no se separan y quien no tiene servicio rellena los huecos. Solo coloca a quien no tiene mesa; después puedes moverlas a mano.</span></span></label>` : ""}
+    <div id="sgPlan"></div>`,
+    `<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="button" id="sgGo" hidden></button>`,
     m => {
-      const go = m.querySelector("#sgGo"), fill = m.querySelector("#sgFill");
-      if (!caps.length && fill) { fill.checked = true; fill.disabled = true; }
-      if (go) go.onclick = () => {
-        const doFill = fill && fill.checked;
-        commit(() => {
-          caps.forEach(c => state.tables.push({id: uid(), name: nextTableName(), cap: c}));
-          if (doFill) {
-            const queue = free.slice().sort((a, b) => (a.group || "~").localeCompare(b.group || "~", "es") || byName(a, b));
-            for (const t of state.tables) {
-              let room = t.cap - state.people.filter(p => p.table === t.id).length;
-              while (room > 0 && queue.length) { queue.shift().table = t.id; room--; }
-            }
-          }
-        });
-        closeModal(); toast(caps.length ? `${caps.length} mesas creadas` : "Personas sentadas");
+      const plan = m.querySelector("#sgPlan"), go = m.querySelector("#sgGo"), fill = m.querySelector("#sgFill");
+      let cur = null;
+      const draw = () => {
+        $$("#sgWho button", m).forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === who)));
+        const free = freeOf(who);
+        const freeSeats = state.tables.reduce((s, t) => s + Math.max(0, t.cap - seatedIn(t.id).length), 0);
+        if (!free.length) { plan.innerHTML = `<p class="banner" style="margin:0">${nAll ? "Todos los confirmados tienen mesa." : "Todo el mundo tiene mesa."}</p>`; go.hidden = true; return; }
+        go.hidden = false;
+        if (fill && fill.checked) {
+          cur = planSeating(free);
+          const newN = cur.bins.filter(b => !b.t).length, noGroup = free.filter(p => !p.group.trim()).length;
+          let n = 0; const names = new Set(state.tables.map(t => t.name));
+          const nameNew = () => { do n++; while (names.has("Mesa " + n)); return "Mesa " + n; };
+          plan.innerHTML = `<div class="panel" style="padding:12px 14px;background:var(--accent-soft);border-color:transparent;display:flex;flex-direction:column;gap:6px">
+              <span class="small muted">Propuesta: ${free.length} personas${newN ? ` en ${newN} ${newN === 1 ? "mesa nueva" : "mesas nuevas"}` : ""}${cur.bins.some(b => b.t) ? `${newN ? " y" : " en"} huecos de mesas que ya tienes` : ""}</span>
+              ${cur.bins.map(b => `<div style="display:flex;gap:8px;align-items:baseline"><b style="white-space:nowrap">${esc(b.t ? b.t.name : nameNew())}</b><span class="small muted" style="white-space:nowrap">${b.base + b.list.length}/${b.cap}</span><span class="small" style="overflow-wrap:anywhere">${b.t ? "+ " : ""}${seatingSummary(b.list)}</span></div>`).join("")}
+            </div>
+            ${cur.left.length ? `<p class="small" style="margin:0;color:var(--bad)">${cur.left.length} personas se quedan sin sitio: añade más mesas.</p>` : ""}
+            ${noGroup ? `<p class="small muted" style="margin:0">Hay ${noGroup} ${noGroup === 1 ? "persona" : "personas"} sin servicio. Si se lo pones en su ficha, el reparto sale mejor.</p>` : ""}`;
+          go.textContent = newN ? `Crear ${newN} ${newN === 1 ? "mesa" : "mesas"} y sentar` : "Sentar a la gente";
+        } else {
+          cur = null;
+          const caps = planTables(free.length - freeSeats), count = c => caps.filter(x => x === c).length;
+          plan.innerHTML = caps.length ? `<div class="panel" style="padding:14px 16px;background:var(--accent-soft);border-color:transparent"><span class="small muted">Propuesta</span><div style="font-size:1.1rem">${[10, 9, 8].filter(c => count(c)).map(c => `<b>${count(c)}</b> ${count(c) === 1 ? "mesa" : "mesas"} de ${c}`).join(", ")}</div><span class="small muted">${caps.length} mesas nuevas vacías · ${caps.reduce((a, b) => a + b, 0)} sillas.</span></div>`
+            : `<p class="banner" style="margin:0">Ya tienes sillas suficientes. No hace falta crear mesas nuevas.</p>`;
+          go.hidden = !caps.length; go.textContent = "Crear mesas";
+        }
+      };
+      const sw = m.querySelector("#sgWho"); if (sw) sw.onclick = ev => { const b = ev.target.closest("button"); if (!b) return; who = b.dataset.v; draw(); };
+      if (fill) fill.onchange = draw;
+      draw();
+      go.onclick = () => {
+        if (cur) {
+          const p = cur;
+          commit(() => p.bins.forEach(b => {
+            let t = b.t;
+            if (!t) { t = {id: uid(), name: nextTableName(), cap: b.cap}; state.tables.push(t); }
+            b.list.forEach(x => { x.table = t.id; });
+          }));
+          closeModal(); toast("Mesas repartidas por servicio");
+        } else {
+          const free = freeOf(who), freeSeats = state.tables.reduce((s, t) => s + Math.max(0, t.cap - seatedIn(t.id).length), 0);
+          const caps = planTables(free.length - freeSeats);
+          commit(() => caps.forEach(c => state.tables.push({id: uid(), name: nextTableName(), cap: c})));
+          closeModal(); toast(`${caps.length} mesas creadas`);
+        }
       };
     });
 }
