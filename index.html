@@ -179,6 +179,9 @@ a.ticket{color:var(--accent);font-weight:700}
 /* Cuentas */
 .money{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 .money .panel{padding:14px 16px}
+.quota{display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap}
+.quota .inp{width:110px}
+.quota.setup{border:2px solid var(--accent)}
 .money b{display:block;font-family:var(--f-display);font-size:1.5rem;font-variant-numeric:tabular-nums}
 .progress{height:10px;border-radius:99px;background:var(--surface-2);overflow:hidden}
 .progress i{display:block;height:100%;background:var(--ok)}
@@ -435,7 +438,7 @@ html,body{margin:0}
       <div class="stat"><b id="sPeople">0</b><span id="sPeopleLbl">asistentes</span></div>
       <div class="stat"><b id="sSeated">0</b><span>con mesa asignada</span></div>
       <div class="stat"><b id="sTotal">0 €</b><span>gastado hasta ahora</span></div>
-      <div class="stat"><b id="sEach">0 €</b><span>por persona (aprox.)</span></div>
+      <div class="stat"><b id="sEach">0 €</b><span>queda en el bote</span></div>
     </div>
   </div>
 </header>
@@ -507,6 +510,7 @@ html,body{margin:0}
 
   <!-- CUENTAS -->
   <section class="view" id="view-accounts" hidden>
+    <div class="panel quota" id="quotaBox"></div>
     <div class="money" id="moneyTop"></div>
     <div class="toolbar">
       <div class="grow"><input class="search" id="qAcc" type="search" placeholder="Buscar persona…" aria-label="Buscar en cuentas"></div>
@@ -518,7 +522,7 @@ html,body{margin:0}
       <button class="btn" id="btnCopy" type="button">Copiar resumen</button>
     </div>
     <div class="panel" id="accList"></div>
-    <p class="small muted" style="margin:0">Toca a una persona para apuntar pagos, enviarle un recordatorio o quitarle gastos concretos. Las cantidades se redondean al céntimo.</p>
+    <p class="small muted" style="margin:0">Toca a una persona para apuntar pagos, enviarle un recordatorio o ponerle una cuota distinta. Las cantidades se redondean al céntimo.</p>
   </section>
 
   <!-- TAREAS -->
@@ -591,7 +595,7 @@ const menuShort = m => m.name.length > 16 ? m.name.slice(0, 15) + "…" : m.name
 const RSVP = {yes: {name: "Confirmado", cls: "ok"}, pending: {name: "Pendiente", cls: "warn"}, no: {name: "No viene", cls: "bad"}, gift: {name: "Solo regalo", cls: "gold"}};
 const RSVP_KEYS = ["yes", "pending", "no", "gift"];
 // Versión de los datos. Si en la nube hay datos de una versión más nueva, esta página no los toca.
-const DATA_V = 3;
+const DATA_V = 4;
 const METHODS = ["Bizum", "Efectivo", "Transferencia"];
 const TASK_TEMPLATE = [
   [-60, "Reservar el restaurante o el local"], [-50, "Contratar el DJ o la música"], [-45, "Reservar el hotel"],
@@ -619,7 +623,8 @@ const fmtNum = n => String(Math.round((n || 0) * 100) / 100).replace(".", ",");
 
 /* ---------- estado ---------- */
 const LS_KEY = "despedida-organizador-v1";
-const blank = () => ({v: DATA_V, eventName: "Despedida de jubilación", eventDate: "", payInfo: "", defaultMethod: "Bizum", menus: [{id: "", name: "Menú general", dishes: "", file: null}], people: [], tables: [], expenses: [], tasks: [], updatedAt: 0});
+const blank = () => ({v: DATA_V, eventName: "Despedida de jubilación", eventDate: "", payInfo: "", defaultMethod: "Bizum", quota: null, giftQuota: null, menus: [{id: "", name: "Menú general", dishes: "", file: null}], people: [], tables: [], expenses: [], tasks: [], updatedAt: 0});
+const numOrNull = v => v === null || v === undefined || v === "" || !isFinite(+v) ? null : Math.max(0, Math.round(+v * 100) / 100);
 const cleanFile = f => f && f.id ? {id: f.id, name: f.name || "archivo", type: f.type || ""} : null;
 // Los menús usan como id el mismo valor que ya tenían las personas en "diet", así nadie pierde su menú.
 function normalizeMenus(s, people) {
@@ -643,11 +648,12 @@ function normalize(s) {
     eventDate: typeof s.eventDate === "string" ? s.eventDate : "",
     payInfo: typeof s.payInfo === "string" ? s.payInfo : "",
     defaultMethod: METHODS.includes(s.defaultMethod) ? s.defaultMethod : "Bizum",
+    quota: numOrNull(s.quota), giftQuota: numOrNull(s.giftQuota),
     menus: normalizeMenus(s, people.filter(p => p && typeof p.diet === "string")),
     people: Array.isArray(s.people) ? s.people.filter(p => p && p.id && p.name).map(p => ({
       id: p.id, name: String(p.name), group: p.group || "", table: p.table || null, exempt: !!p.exempt,
       rsvp: RSVP_KEYS.includes(p.rsvp) ? p.rsvp : "pending",
-      diet: typeof p.diet === "string" ? p.diet : "", dietNote: p.dietNote || "", phone: p.phone || "",
+      diet: typeof p.diet === "string" ? p.diet : "", dietNote: p.dietNote || "", phone: p.phone || "", quota: numOrNull(p.quota),
       payments: Array.isArray(p.payments) ? p.payments.filter(x => x && isFinite(+x.amount)).map(x => ({id: x.id || uid(), amount: Math.round(+x.amount * 100) / 100, method: x.method || "", date: x.date || ""})) : [],
       ...(p.paid && !Array.isArray(p.payments) ? {legacyPaid: true} : {}),
     })) : [],
@@ -665,7 +671,7 @@ function fixLegacy() {
     if (!p.legacyPaid) continue;
     delete p.legacyPaid;
     const o = owes(p).total;
-    if (o > 0 && !p.payments.length) p.payments.push({id: uid(), amount: o, method: "", date: ""});
+    if (state.quota !== null && o > 0 && !p.payments.length) p.payments.push({id: uid(), amount: o, method: "", date: ""});
   }
 }
 
@@ -790,22 +796,24 @@ const isGiftExp = e => e.cat === "regalo";
 const inExpense = (p, e) => coming(p) || (giftOnly(p) && (!e || isGiftExp(e)));
 const payers = e => state.people.filter(p => !p.exempt && inExpense(p, e));
 function participants(e) { const ex = new Set(e.excluded); return payers(e).filter(p => !ex.has(p.id)); }
-function owes(p) {
-  if (p.exempt || !inExpense(p)) return {total: 0, items: []};
-  let total = 0; const items = [];
-  for (const e of state.expenses) {
-    if (!inExpense(p, e)) continue;
-    const parts = participants(e);
-    const inIt = !e.excluded.includes(p.id);
-    const share = parts.length ? e.amount / (inIt ? parts.length : parts.length + 1) : e.amount;
-    items.push({e, inIt, share});
-    if (inIt && parts.length) total += e.amount / parts.length;
-  }
-  return {total: Math.round(total * 100) / 100, items};
+// Modelo bote: cada persona paga una cuota fija (la general, la de «Solo regalo» o una propia).
+// Devuelve null si la cuota todavía no está definida.
+function quotaOf(p) {
+  if (p.quota !== null && p.quota !== undefined) return p.quota;
+  return p.rsvp === "gift" ? state.giftQuota : state.quota;
 }
+function due(p) {
+  if (p.exempt) return 0;
+  const q = quotaOf(p);
+  if (p.rsvp === "yes" || p.rsvp === "gift") return q;
+  if (p.rsvp === "pending") return paidBy(p) > 0 ? q : 0;
+  return 0;
+}
+function owes(p) { const d = due(p); return {total: d === null ? 0 : d, unknown: d === null}; }
 const round2 = n => Math.round(n * 100) / 100;
 const paidBy = p => round2(p.payments.reduce((s, x) => s + x.amount, 0));
-function balance(p) { const owe = owes(p).total, paid = paidBy(p); return {owe, paid, left: round2(owe - paid)}; }
+function balance(p) { const o = owes(p), paid = paidBy(p); return {owe: o.total, paid, left: o.unknown ? 0 : round2(o.total - paid), unknown: o.unknown}; }
+const bote = () => round2(collected() - totalSpent());
 const totalSpent = () => state.expenses.reduce((s, e) => s + e.amount, 0);
 const collected = () => round2(state.people.reduce((s, p) => s + paidBy(p), 0));
 const paidToSuppliers = () => round2(state.expenses.reduce((s, e) => s + e.paidAmount, 0));
@@ -824,13 +832,12 @@ function render() {
   const yes = att.filter(p => p.rsvp === "yes").length;
   const seated = att.filter(p => p.table && tableOf(p.table)).length;
   const total = totalSpent();
-  const att2 = payers().filter(coming);
-  const avg = att2.length ? att2.reduce((s, p) => s + owes(p).total, 0) / att2.length : 0;
+  const left = bote();
   $("#sPeople").textContent = att.length;
   $("#sPeopleLbl").textContent = `asistentes · ${yes} confirmados`;
   $("#sSeated").textContent = seated + " / " + att.length;
   $("#sTotal").textContent = money(total);
-  $("#sEach").textContent = money(avg);
+  $("#sEach").textContent = money(left);
   $("#cPeople").textContent = att.length;
   $("#cTables").textContent = state.tables.length;
   $("#cExpenses").textContent = state.expenses.length;
@@ -1064,7 +1071,7 @@ function renderExpenses() {
   const byCat = CATS.map(c => ({c, v: state.expenses.filter(e => cat(e.cat).id === c.id).reduce((s, e) => s + e.amount, 0)})).filter(x => x.v > 0);
   const paidSup = paidToSuppliers(), leftSup = round2(state.expenses.reduce((s, e) => s + supplierLeft(e), 0));
   sum.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap"><span class="muted">Total gastado</span><b class="num" style="font-family:var(--f-display);font-size:1.6rem">${money(total)}</b></div>
-    <div class="line small" style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill ok">Pagado a proveedores ${money(paidSup)}</span>${leftSup > 0.004 ? `<span class="pill warn">Falta pagar ${money(leftSup)}</span>` : ""}</div>
+    <div class="line small" style="display:flex;gap:6px;flex-wrap:wrap"><span class="pill ${bote() < -0.004 ? "bad" : ""}">Queda en el bote ${money(bote())}</span><span class="pill ok">Pagado a proveedores ${money(paidSup)}</span>${leftSup > 0.004 ? `<span class="pill warn">Falta pagar ${money(leftSup)}</span>` : ""}</div>
     <div class="catbar" role="img" aria-label="Reparto por categoría">${byCat.map(x => `<span style="width:${total ? x.v / total * 100 : 0}%;background:${x.c.color}"></span>`).join("")}</div>
     <div class="legend">${byCat.map(x => `<span><i style="background:${x.c.color}"></i>${esc(x.c.name)} <b class="num">${money(x.v)}</b></span>`).join("")}</div>`;
   const dues = state.expenses.filter(e => supplierLeft(e) > 0.004).sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
@@ -1077,15 +1084,13 @@ function renderExpenses() {
   }).join("")}</div>`;
   const sorted = state.expenses.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   list.innerHTML = sorted.map(e => {
-    const c = cat(e.cat), parts = participants(e), allPay = payers(e).length;
+    const c = cat(e.cat);
     return `<div class="exp">
       <span class="catdot" style="background:${c.color}22;color:${c.color}">${esc(c.name.slice(0, 2))}</span>
       <span class="concept">${esc(e.concept)}</span>
       <span class="amount">${money(e.amount)}</span>
       <span class="sub">
         <span>${esc(c.name)}</span>${e.date ? `<span>· ${fmtDate(e.date)}</span>` : ""}
-        <span>· ${parts.length === allPay ? "Pagan todos" : `Pagan ${parts.length} de ${allPay}`}</span>
-        ${parts.length ? `<span class="pill">${money(e.amount / parts.length)} c/u</span>` : `<span class="pill bad">Nadie lo paga</span>`}
         ${supplierPill(e)}
         ${e.ticket ? `<button class="btn ghost sm ticket" type="button" data-ticket="${esc(e.ticket.id)}">Ver ticket</button>` : ""}
       </span>
@@ -1105,18 +1110,38 @@ function supplierPill(e) {
 }
 
 /* Cuentas */
+function quotaLabel(p) { return p.rsvp === "gift" ? "cuota de «Solo regalo»" : "cuota general"; }
+function quotaRow(p) {
+  const gen = p.rsvp === "gift" ? state.giftQuota : state.quota;
+  return `<div class="sec-title">Cuota</div>
+    <div class="pay-form"><input class="inp num" id="pq-${p.id}" inputmode="decimal" placeholder="${gen === null ? "Importe" : fmtNum(gen)}" value="${p.quota !== null ? fmtNum(p.quota) : ""}" aria-label="Cuota de esta persona"><button class="btn sm" type="button" data-setquota="${p.id}">Guardar cuota</button></div>
+    <span class="small muted">${p.quota !== null ? `Tiene una cuota propia. Déjalo vacío para volver a la ${quotaLabel(p)}${gen === null ? "" : ` (${money(gen)})`}.` : gen === null ? `Todavía no has definido la ${quotaLabel(p)}. Hazlo arriba, o pon aquí una cuota solo para esta persona.` : `Paga la ${quotaLabel(p)} (${money(gen)}). Si a esta persona le cobras otra cantidad, ponla aquí.`}${p.rsvp === "pending" ? " Mientras no confirme, solo cuenta si ya ha pagado algo." : ""}</span>`;
+}
+function renderQuota() {
+  const box = $("#quotaBox"), hasGift = state.people.some(p => p.rsvp === "gift");
+  const setup = state.quota === null || ui.quotaEdit;
+  box.classList.toggle("setup", state.quota === null);
+  box.innerHTML = setup ? `<div style="flex-basis:100%"><b>${state.quota === null ? "Define la cuota" : "Cambiar la cuota"}</b><div class="small muted">Lo que pagáis cada uno para el bote. Con ese dinero se pagan el restaurante, el DJ, el regalo… Las personas que ya han pagado esa cantidad saldrán como pagadas.</div></div>
+      <label class="small" style="display:flex;gap:8px;align-items:center">Asistentes <input class="inp num" id="qQuota" inputmode="decimal" placeholder="Ej.: 55" value="${state.quota !== null ? fmtNum(state.quota) : ""}"> €</label>
+      <label class="small" style="display:flex;gap:8px;align-items:center">Solo regalo <input class="inp num" id="qGift" inputmode="decimal" placeholder="Ej.: 5" value="${state.giftQuota !== null ? fmtNum(state.giftQuota) : ""}"> €</label>
+      <span style="display:flex;gap:8px;margin-left:auto">${ui.quotaEdit ? `<button class="btn sm" type="button" data-act="cancelQuota">Cancelar</button>` : ""}<button class="btn sm primary" type="button" data-act="saveQuota">Guardar cuota</button></span>`
+    : `<span><span class="muted small">Cuota</span> <b class="num">${money(state.quota)}</b> <span class="small muted">por asistente</span></span>
+      <span><b class="num">${state.giftQuota !== null ? money(state.giftQuota) : "—"}</b> <span class="small muted">solo regalo${!hasGift && state.giftQuota === null ? "" : ""}</span></span>
+      <button class="btn sm" type="button" data-act="editQuota" style="margin-left:auto">Cambiar</button>`;
+}
 function renderAccounts() {
-  const rows = state.people.filter(p => inExpense(p) || p.payments.length).sort(byName).map(p => ({p, o: owes(p), ...balance(p)}));
-  const total = round2(rows.reduce((s, r) => s + r.o.total, 0));
-  const got = collected(), sup = paidToSuppliers(), cash = round2(got - sup);
+  const rows = state.people.filter(p => p.rsvp !== "no" || p.payments.length).sort(byName).map(p => ({p, o: owes(p), ...balance(p)}));
+  const got = collected(), sup = paidToSuppliers(), cash = round2(got - sup), spent = totalSpent();
   const pend = round2(rows.reduce((s, r) => s + Math.max(0, r.left), 0));
   const pendN = rows.filter(r => r.left > 0.004).length;
-  const pct = total ? Math.min(100, (total - pend) / total * 100) : 0;
+  const pct = got + pend ? Math.min(100, got / (got + pend) * 100) : 0;
+  const left = round2(got - spent), ifAll = round2(left + pend);
+  renderQuota();
   $("#moneyTop").innerHTML = `
-    <div class="panel"><span class="muted small">A cobrar</span><b>${money(total)}</b><span class="small muted">entre ${payers().length} personas que pagan</span></div>
-    <div class="panel"><span class="muted small">Ya cobrado</span><b style="color:var(--ok)">${money(got)}</b><div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div></div>
-    <div class="panel"><span class="muted small">Falta por cobrar</span><b style="color:${pend > 0.004 ? "var(--warn)" : "var(--ok)"}">${money(pend)}</b><span class="small muted">${pendN} ${pendN === 1 ? "persona" : "personas"}</span></div>
-    <div class="panel"><span class="muted small">En caja</span><b style="color:${cash < -0.004 ? "var(--bad)" : "var(--fg)"}">${money(cash)}</b><span class="small muted">cobrado menos ${money(sup)} pagados a proveedores</span></div>`;
+    <div class="panel"><span class="muted small">Cobrado</span><b style="color:var(--ok)">${money(got)}</b><div class="progress" style="margin-top:6px"><i style="width:${pct}%"></i></div></div>
+    <div class="panel"><span class="muted small">Falta por cobrar</span><b style="color:${pend > 0.004 ? "var(--warn)" : "var(--ok)"}">${money(pend)}</b><span class="small muted">${pendN} ${pendN === 1 ? "persona" : "personas"}${state.quota === null ? " · falta definir la cuota" : ""}</span></div>
+    <div class="panel"><span class="muted small">Gastos apuntados</span><b>${money(spent)}</b><span class="small muted">${money(sup)} ya pagados a proveedores</span></div>
+    <div class="panel"><span class="muted small">Queda en el bote</span><b style="color:${left < -0.004 ? "var(--bad)" : "var(--fg)"}">${money(left)}</b><span class="small muted">${pend > 0.004 ? `si se cobra todo: ${money(ifAll)} · ` : ""}en caja ${money(cash)}</span></div>`;
   $$("#fAcc button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.f === ui.accFilter)));
   const el = $("#accList");
   if (!state.people.length) { el.innerHTML = emptyState("Sin asistentes todavía", "Cuando añadas asistentes y gastos, aquí verás cuánto debe pagar cada persona.", "Añadir asistentes", "addPeople"); return; }
@@ -1130,10 +1155,12 @@ function renderAccounts() {
     const done = o.total > 0 && Math.abs(left) <= 0.004;
     let owe;
     if (p.exempt) owe = `—<small>invitada</small>`;
-    else if (left < -0.004) owe = `<span style="color:var(--bad)">${money(-left)}</span><small>a devolver${inExpense(p) ? "" : " · no viene"}</small>`;
+    else if (o.unknown) owe = paid > 0 ? `${money(paid)}<small>pagado · falta definir la cuota</small>` : `—<small>falta definir la cuota</small>`;
+    else if (left < -0.004) owe = `<span style="color:var(--bad)">${money(-left)}</span><small>a devolver${p.rsvp === "no" ? " · no viene" : ""}</small>`;
+    else if (p.rsvp === "pending" && !paid) owe = `—<small>sin confirmar</small>`;
     else if (done) owe = `${money(o.total)}<small>pagado</small>`;
     else if (paid > 0) owe = `${money(left)}<small>falta · pagó ${money(paid)}</small>`;
-    else owe = `${money(left)}${o.total ? "" : "<small>sin gastos</small>"}`;
+    else owe = `${money(left)}${o.total ? "<small>falta</small>" : "<small>sin cuota</small>"}`;
     const reminder = !p.exempt && left > 0.004 ? `<div class="sec-title">Recordatorio de pago</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${p.phone ? `<a class="btn sm primary" href="${esc(waLink(p))}" target="_blank" rel="noopener">Enviar por WhatsApp</a>` : ""}<button class="btn sm" type="button" data-copymsg="${p.id}">Copiar mensaje</button></div>
         ${p.phone ? "" : `<span class="small muted">Si añades su teléfono (en Asistentes) podrás enviárselo directamente por WhatsApp.</span>`}
@@ -1146,7 +1173,7 @@ function renderAccounts() {
           ${p.exempt ? `<span class="pill gold">Invitada · no paga</span>` : giftOnly(p) ? `<span class="pill gold">Solo regalo</span>` : ""}
           <span class="owe">${owe}</span>
         </button>
-        ${p.exempt || o.total <= 0 ? "" : `<button type="button" class="paid" data-paid="${p.id}" aria-pressed="${done}" aria-label="${done ? "Pagado del todo" : "Apuntar que ha pagado lo que falta"}"><span class="box" aria-hidden="true"></span>Pagado</button>`}
+        ${p.exempt || o.unknown || o.total <= 0 ? "" : `<button type="button" class="paid" data-paid="${p.id}" aria-pressed="${done}" aria-label="${done ? "Pagado del todo" : "Apuntar que ha pagado lo que falta"}"><span class="box" aria-hidden="true"></span>Pagado</button>`}
       </div>
       ${open ? `<div class="breakdown">
         <div class="sec-title">Pagos</div>
@@ -1155,9 +1182,7 @@ function renderAccounts() {
           <div class="pay-form"><input class="inp num" id="pa-${p.id}" inputmode="decimal" placeholder="Importe" value="${left > 0.004 ? fmtNum(left) : ""}" aria-label="Importe del pago"><select class="inp" id="pm-${p.id}" aria-label="Forma de pago">${METHODS.map(m => `<option ${m === state.defaultMethod ? "selected" : ""}>${m}</option>`).join("")}</select><button class="btn sm primary" type="button" data-addpay="${p.id}">Apuntar pago</button></div>
         </div>
         ${reminder}
-        ${p.exempt ? `<span class="small muted">Esta persona está marcada como invitada y no paga nada. Puedes cambiarlo desde Asistentes.</span>` : !inExpense(p) ? `<span class="small muted">Esta persona no viene, así que no paga nada.</span>` : o.items.length ? `<div class="sec-title">Gastos en los que participa</div>` +
-        o.items.map(({e, inIt, share}) => `<div class="bk ${inIt ? "" : "off"}"><label><input type="checkbox" data-part="${p.id}" data-exp="${e.id}" ${inIt ? "checked" : ""}><span>${esc(e.concept)}</span></label><span class="v">${money(share)}</span></div>`).join("") +
-        `<span class="small muted">${giftOnly(p) ? "No viene a la despedida: solo paga su parte de los gastos de Regalos. " : ""}Desmarca un gasto si esta persona no participa en él. Su parte se reparte entre el resto.</span>` : `<span class="small muted">${giftOnly(p) ? "No viene a la despedida y aún no hay gastos de la categoría Regalos." : "Aún no hay gastos."}</span>`}
+        ${p.exempt ? `<span class="small muted">Esta persona está marcada como invitada y no paga nada. Puedes cambiarlo desde Asistentes.</span>` : p.rsvp === "no" ? `<span class="small muted">Esta persona no viene, así que no paga nada.</span>` : quotaRow(p)}
       </div>` : ""}
     </div>`;
   }).join("") : `<div class="empty"><p>Nadie coincide con el filtro.</p></div>`;
@@ -1169,7 +1194,7 @@ function eventPhrase() {
 function payMessage(p) {
   const b = balance(p), first = p.name.trim().split(/\s+/)[0];
   let msg = `¡Hola, ${first}! Te escribo por ${eventPhrase()}${state.eventDate ? " (" + fmtDate(state.eventDate) + ")" : ""}. `;
-  msg += b.paid > 0 ? `Ya tengo ${money(b.paid)} tuyos; te faltan ${money(b.left)}.` : `Tu parte es de ${money(b.left)}.`;
+  msg += b.paid > 0 ? `Ya tengo ${money(b.paid)} tuyos; te faltan ${money(b.left)}.` : `Tu cuota es de ${money(b.left)}.`;
   if (state.payInfo.trim()) msg += ` Puedes pagarlo así: ${state.payInfo.trim().replace(/[.\s]+$/, "")}.`;
   return msg + " ¡Muchas gracias!";
 }
@@ -1585,7 +1610,7 @@ function modalExpense(id) {
     </div>
     <div class="field"><label for="exNote">Nota (opcional)</label><input class="inp" id="exNote" value="${esc(e.note)}" placeholder="Ej.: contacto del proveedor, condiciones…"></div>
     <div class="field"><span class="lbl">Ticket o reserva (opcional)</span><div id="exTicket"></div></div>
-    <div class="field"><span class="lbl">¿Quién lo paga?</span>
+    <div class="field" hidden><span class="lbl">¿Quién lo paga?</span>
       <div class="who"><div class="who-head"><b id="exWhoCount"></b><span style="margin-left:auto;display:flex;gap:6px"><button class="btn sm" type="button" id="exAll">Todos</button><button class="btn sm" type="button" id="exNone">Nadie</button></span>
         <input class="search" id="exWhoQ" type="search" placeholder="Buscar para quitar a alguien…" style="padding:8px 12px" aria-label="Buscar persona"></div>
       <div class="who-list" id="exWho"></div></div>
@@ -1663,6 +1688,10 @@ function modalSettings() {
     <div class="field"><label for="stName">Nombre del evento</label><input class="inp" id="stName" value="${esc(state.eventName)}" placeholder="Ej.: Despedida de Carmen"></div>
     <div class="field"><label for="stDate">Fecha del evento</label><input class="inp" id="stDate" type="date" value="${esc(state.eventDate)}"></div>
     <div class="field"><label for="stPay">Cómo te tienen que pagar</label><input class="inp" id="stPay" value="${esc(state.payInfo)}" placeholder="Ej.: Bizum al 600 000 000 (María)"><span class="hint">Aparece en los mensajes de recordatorio de pago.</span></div>
+    <div class="two">
+      <div class="field"><label for="stQuota">Cuota por asistente (€)</label><input class="inp num" id="stQuota" inputmode="decimal" value="${state.quota !== null ? fmtNum(state.quota) : ""}" placeholder="Ej.: 55"></div>
+      <div class="field"><label for="stGift">Cuota «Solo regalo» (€)</label><input class="inp num" id="stGift" inputmode="decimal" value="${state.giftQuota !== null ? fmtNum(state.giftQuota) : ""}" placeholder="Ej.: 5"></div>
+    </div>
     <hr style="border:0;border-top:1px solid var(--line);margin:4px 0">
     <div class="field"><span class="lbl">Copia de seguridad</span>
       <span class="hint">Guarda un archivo con todos los datos por si acaso. Más adelante puedes restaurarlo aquí mismo.</span>
@@ -1674,7 +1703,11 @@ function modalSettings() {
     `<button class="btn" type="button" data-close>Cerrar</button><button class="btn primary" type="button" id="stSave">Guardar</button>`,
     m => {
       m.querySelector("#stSave").onclick = () => {
-        commit(() => { state.eventName = m.querySelector("#stName").value.trim() || "Despedida de jubilación"; state.eventDate = m.querySelector("#stDate").value; state.payInfo = m.querySelector("#stPay").value.trim(); });
+        commit(() => { state.eventName = m.querySelector("#stName").value.trim() || "Despedida de jubilación"; state.eventDate = m.querySelector("#stDate").value; state.payInfo = m.querySelector("#stPay").value.trim();
+          const q = m.querySelector("#stQuota").value.trim(), g = m.querySelector("#stGift").value.trim();
+          const qv = q ? parseAmount(q) : null, gv = g ? parseAmount(g) : null;
+          if (qv === null || qv >= 0) state.quota = qv === null ? null : round2(qv);
+          if (gv === null || gv >= 0) state.giftQuota = gv === null ? null : round2(gv); });
         closeModal(); toast("Guardado");
       };
       m.querySelector("#stLogout").onclick = async () => {
@@ -1754,12 +1787,11 @@ $("#fTablesView").onclick = e => { const b = e.target.closest("button"); if (!b)
 $("#fAcc").onclick = e => { const b = e.target.closest("button"); if (!b) return; ui.accFilter = b.dataset.f; renderAccounts(); };
 $("#btnCopy").onclick = () => {
   const lines = [state.eventName + (state.eventDate ? " · " + fmtDate(state.eventDate) : ""), ""];
-  payers().sort(byName).forEach(p => {
-    const b = balance(p); if (b.owe <= 0) return;
+  state.people.slice().sort(byName).forEach(p => {
+    const b = balance(p); if (b.owe <= 0 || b.unknown) return;
     lines.push(`${p.name}: ${Math.abs(b.left) <= 0.004 ? "pagado ✓" : b.paid > 0 ? "faltan " + money(b.left) + " (ha pagado " + money(b.paid) + ")" : "debe " + money(b.left)}`);
   });
-  const total = round2(payers().reduce((s, p) => s + owes(p).total, 0));
-  lines.push("", "Total a cobrar: " + money(total), "Cobrado: " + money(collected()));
+  lines.push("", "Cobrado: " + money(collected()), "Gastos apuntados: " + money(totalSpent()), "Queda en el bote: " + money(bote()));
   if (state.payInfo) lines.push("", "Cómo pagar: " + state.payInfo);
   copyText(lines.join("\n"), "Resumen copiado. Pégalo en WhatsApp o en un correo.", "Resumen para compartir");
 };
@@ -1778,6 +1810,17 @@ document.addEventListener("click", ev => {
     if (a === "copyRestaurant") copyText(restaurantText(), "Recuento copiado. Pégalo en WhatsApp o en un correo al restaurante.", "Recuento para el restaurante");
     if (a === "loadTemplate") modalTemplate();
     if (a === "menus") modalMenus();
+    if (a === "editQuota") { ui.quotaEdit = true; renderQuota(); }
+    if (a === "cancelQuota") { ui.quotaEdit = false; renderQuota(); }
+    if (a === "saveQuota") {
+      const q = $("#qQuota").value.trim(), g = $("#qGift").value.trim();
+      if (!q) { toast("Pon la cuota de los asistentes"); $("#qQuota").focus(); return; }
+      const qv = parseAmount(q), gv = g ? parseAmount(g) : null;
+      if (!(qv > 0) || (g && !(gv >= 0))) { toast("Revisa los importes"); return; }
+      ui.quotaEdit = false;
+      commit(() => { state.quota = round2(qv); state.giftQuota = gv === null ? null : round2(gv); });
+      toast("Cuota guardada");
+    }
     if (a === "clearTasks") modalClearTasks();
     return;
   }
@@ -1792,6 +1835,14 @@ document.addEventListener("click", ev => {
   const cm = t.closest("[data-copymsg]"); if (cm) { const p = state.people.find(x => x.id === cm.dataset.copymsg); if (p) copyText(payMessage(p), "Mensaje copiado. Pégalo en WhatsApp.", "Mensaje para " + p.name); return; }
   const ep = t.closest("[data-edit-person]"); if (ep) return modalEditPerson(ep.dataset.editPerson);
   const et = t.closest("[data-edit-table]"); if (et) return modalEditTable(et.dataset.editTable);
+  const sq = t.closest("[data-setquota]");
+  if (sq) {
+    const p = state.people.find(x => x.id === sq.dataset.setquota); if (!p) return;
+    const raw = $("#pq-" + p.id).value.trim(), v = raw ? parseAmount(raw) : null;
+    if (raw && !(v >= 0)) { toast("Revisa el importe"); return; }
+    commit(() => { p.quota = v === null ? null : round2(v); });
+    toast(v === null ? "Vuelve a la cuota general" : "Cuota guardada"); return;
+  }
   const tk = t.closest("[data-ticket]"); if (tk) { if (sb) assets.open(tk.dataset.ticket); return; }
   const ex = t.closest("[data-edit-exp]"); if (ex) return modalExpense(ex.dataset.editExp);
   const un = t.closest("[data-unseat]"); if (un) return unseat(un.dataset.unseat);
