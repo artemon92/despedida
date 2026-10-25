@@ -179,6 +179,10 @@ a.ticket{color:var(--accent);font-weight:700}
 /* Cuentas */
 .money{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
 .money .panel{padding:14px 16px}
+.ev-item{display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--surface)}
+.ev-item.cur{border:2px solid var(--accent)}
+.ev-item .t{min-width:0;flex:1;display:flex;flex-direction:column;gap:2px}
+.ev-item .t b{overflow-wrap:anywhere}
 .quota{display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap}
 .quota .inp{width:110px}
 .quota.setup{border:2px solid var(--accent)}
@@ -427,6 +431,9 @@ html,body{margin:0}
       </div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <span class="status" id="status" data-s="local"><i></i><span>Cargando…</span></span>
+        <button class="btn sm" id="btnEvents" type="button">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>
+          Eventos</button>
         <button class="btn sm" id="btnSettings" type="button">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
           Ajustes
@@ -595,7 +602,7 @@ const menuShort = m => m.name.length > 16 ? m.name.slice(0, 15) + "…" : m.name
 const RSVP = {yes: {name: "Confirmado", cls: "ok"}, pending: {name: "Pendiente", cls: "warn"}, no: {name: "No viene", cls: "bad"}, gift: {name: "Solo regalo", cls: "gold"}};
 const RSVP_KEYS = ["yes", "pending", "no", "gift"];
 // Versión de los datos. Si en la nube hay datos de una versión más nueva, esta página no los toca.
-const DATA_V = 4;
+const DATA_V = 5;
 const METHODS = ["Bizum", "Efectivo", "Transferencia"];
 const TASK_TEMPLATE = [
   [-60, "Reservar el restaurante o el local"], [-50, "Contratar el DJ o la música"], [-45, "Reservar el hotel"],
@@ -659,12 +666,19 @@ function normalize(s) {
     })) : [],
     tables: Array.isArray(s.tables) ? s.tables.filter(t => t && t.id).map(t => ({id: t.id, name: t.name || "Mesa", cap: Math.max(1, Math.min(30, +t.cap || 10))})) : [],
     expenses: Array.isArray(s.expenses) ? s.expenses.filter(e => e && e.id).map(e => ({id: e.id, concept: e.concept || "Gasto", cat: e.cat || "otros", amount: +e.amount || 0, date: e.date || "", note: e.note || "", ticket: e.ticket && e.ticket.id ? {id: e.ticket.id, name: e.ticket.name || "ticket", type: e.ticket.type || ""} : null, excluded: Array.isArray(e.excluded) ? e.excluded : [], paidAmount: Math.max(0, +e.paidAmount || 0), dueDate: e.dueDate || ""})) : [],
+    archived: !!s.archived,
     tasks: Array.isArray(s.tasks) ? s.tasks.filter(t => t && t.id && t.title).map(t => ({id: t.id, title: String(t.title), due: t.due || "", done: !!t.done, note: t.note || ""})) : [],
     updatedAt: +s.updatedAt || 0,
   };
 }
 let state = blank();
-try { const raw = localStorage.getItem(LS_KEY); if (raw) state = normalize(JSON.parse(raw)); } catch (e) {}
+// Cada evento es una fila de la tabla "evento". La despedida original es "principal".
+const EV_KEY = "despedida-evento-actual";
+let ROW_ID = "principal";
+try { const e = localStorage.getItem(EV_KEY); if (e && /^[\w-]{1,40}$/.test(e)) ROW_ID = e; } catch (e) {}
+const lsKey = id => id === "principal" ? LS_KEY : LS_KEY + "-" + id;
+function loadLocal(id) { try { const raw = localStorage.getItem(lsKey(id)); if (raw) return normalize(JSON.parse(raw)); } catch (e) {} return blank(); }
+state = loadLocal(ROW_ID);
 // Datos de la versión anterior: "pagado" pasa a ser un pago por el importe que debía.
 function fixLegacy() {
   for (const p of state.people) {
@@ -680,7 +694,6 @@ try { const t = localStorage.getItem(LS_KEY + "-tab"); if (["people","tables","e
 
 /* ---------- guardado (Supabase con copia local) ---------- */
 const CFG = window.DESPEDIDA_CONFIG || {};
-const ROW_ID = "principal";
 const BUCKET = "tickets";
 let sb = null, online = false, readOnly = false;
 let saveTimer = null, saving = Promise.resolve(), dirty = false;
@@ -707,7 +720,7 @@ function setStatus(s) {
   el.dataset.s = s;
   el.lastElementChild.textContent = {cloud: "Guardado en la nube", saving: "Guardando…", local: "Sin conexión: guardado en este dispositivo", error: "No se pudo guardar. Reintentando…"}[s] || "";
 }
-function writeLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) {} }
+function writeLocal() { try { localStorage.setItem(lsKey(ROW_ID), JSON.stringify(state)); } catch (e) {} }
 function persist() {
   state.updatedAt = Date.now();
   writeLocal();
@@ -718,16 +731,16 @@ function persist() {
   } else setStatus("local");
 }
 function flush() {
-  const snap = JSON.stringify(state);
+  const snap = JSON.stringify(state), rid = ROW_ID;
   saving = saving.then(async () => {
-    const { error } = await sb.from("evento").upsert({ id: ROW_ID, data: JSON.parse(snap), updated_at: new Date().toISOString() });
+    const { error } = await sb.from("evento").upsert({ id: rid, data: JSON.parse(snap), updated_at: new Date().toISOString() });
     if (error) {
       setStatus("error");
       clearTimeout(saveTimer); saveTimer = setTimeout(flush, 8000);
       return;
     }
     online = true;
-    if (JSON.stringify(state) === snap) { dirty = false; setStatus("cloud"); }
+    if (rid === ROW_ID && JSON.stringify(state) === snap) { dirty = false; setStatus("cloud"); }
   });
 }
 function commit(fn) { fn(); persist(); render(); }
@@ -735,8 +748,11 @@ function showBanner(t) { const b = $("#banner"); b.textContent = t; b.hidden = !
 
 async function pull() {
   if (!sb || dirty) return;
-  const { data, error } = await sb.from("evento").select("data").eq("id", ROW_ID).maybeSingle();
+  const rid = ROW_ID;
+  const { data, error } = await sb.from("evento").select("data").eq("id", rid).maybeSingle();
+  if (rid !== ROW_ID) return;
   if (error) { online = false; setStatus("local"); return; }
+  if (!data && rid !== "principal") { switchEvent("principal"); return; }
   online = true;
   if (!data) {
     if (state.people.length || state.tables.length || state.expenses.length) persist(); else setStatus("cloud");
@@ -1413,6 +1429,89 @@ function modalEditPerson(id) {
     });
 }
 
+/* Eventos */
+async function switchEvent(id) {
+  if (dirty) { clearTimeout(saveTimer); flush(); }
+  await saving;
+  ROW_ID = id;
+  try { localStorage.setItem(EV_KEY, id); } catch (e) {}
+  state = loadLocal(id); readOnly = false; dirty = false; showBanner("");
+  ui.open.clear(); ui.selected = null; ui.quotaEdit = false;
+  render(); window.scrollTo({top: 0});
+  await pull();
+}
+async function modalEvents() {
+  const m = openModal("Eventos", `<div id="evBody"><p class="small muted" style="margin:0">Cargando…</p></div>`, `<button class="btn" type="button" data-close>Cerrar</button><button class="btn primary" type="button" id="evNewBtn">+ Crear evento nuevo</button>`);
+  m.querySelector("#evNewBtn").onclick = modalNewEvent;
+  if (!sb) return;
+  if (dirty) { clearTimeout(saveTimer); flush(); await saving; }
+  const { data, error } = await sb.from("evento").select("id,updated_at,name:data->>eventName,date:data->>eventDate,archived:data->>archived");
+  const body = m.querySelector("#evBody"); if (!body) return;
+  if (error) { body.innerHTML = `<p class="small muted" style="margin:0">No se pudo cargar la lista de eventos. Comprueba la conexión.</p>`; return; }
+  const list = (data || []).map(r => r.id === ROW_ID ? {...r, name: state.eventName, date: state.eventDate, archived: state.archived ? "true" : null} : r)
+    .sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.updated_at || "").localeCompare(a.updated_at || ""));
+  const act = list.filter(r => r.archived !== "true"), arch = list.filter(r => r.archived === "true");
+  const item = r => `<div class="ev-item ${r.id === ROW_ID ? "cur" : ""}"><span class="t"><b>${esc(r.name || "Evento sin nombre")}</b><span class="small muted">${r.date ? fmtDate(r.date) + " · " + relDays(r.date) : "Sin fecha"}</span></span>
+    ${r.id === ROW_ID ? `<span class="pill ok">Abierto</span>` : `<button class="btn sm primary" type="button" data-ev-open="${esc(r.id)}">Abrir</button>`}
+    <button class="btn sm ghost" type="button" data-ev-arch="${esc(r.id)}" data-v="${r.archived === "true" ? "0" : "1"}">${r.archived === "true" ? "Recuperar" : "Archivar"}</button></div>`;
+  body.innerHTML = `<p class="small muted" style="margin:0 0 10px">Cada evento tiene sus propios asistentes, mesas, menús, gastos, cobros y tareas. Todos usan la misma contraseña.</p>
+    <div style="display:flex;flex-direction:column;gap:8px">${act.map(item).join("") || `<p class="small muted">No hay eventos activos.</p>`}</div>
+    ${arch.length ? `<details style="margin-top:12px"><summary class="small" style="cursor:pointer">Archivados (${arch.length})</summary><div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${arch.map(item).join("")}</div></details>` : ""}`;
+  body.onclick = async ev => {
+    const o = ev.target.closest("[data-ev-open]");
+    if (o) { closeModal(); await switchEvent(o.dataset.evOpen); toast("Evento abierto: " + state.eventName); return; }
+    const a = ev.target.closest("[data-ev-arch]");
+    if (a) {
+      const on = a.dataset.v === "1", id = a.dataset.evArch;
+      a.disabled = true;
+      if (id === ROW_ID) commit(() => { state.archived = on; });
+      else {
+        const { data: row, error: e1 } = await sb.from("evento").select("data").eq("id", id).maybeSingle();
+        if (e1 || !row) { toast("No se pudo cambiar. Comprueba la conexión."); a.disabled = false; return; }
+        if (+row.data.v > DATA_V) { toast("Recarga la página: hay una versión nueva"); return; }
+        const d = normalize(row.data); d.archived = on; d.updatedAt = Date.now();
+        const { error: e2 } = await sb.from("evento").upsert({ id, data: d, updated_at: new Date().toISOString() });
+        if (e2) { toast("No se pudo cambiar. Comprueba la conexión."); a.disabled = false; return; }
+      }
+      toast(on ? "Evento archivado" : "Evento recuperado"); modalEvents();
+    }
+  };
+}
+function modalNewEvent() {
+  openModal("Crear evento nuevo", `
+    <div class="field"><label for="neName">Nombre del evento</label><input class="inp" id="neName" placeholder="Ej.: Cena de Navidad del servicio"></div>
+    <div class="field"><label for="neDate">Fecha (opcional)</label><input class="inp" id="neDate" type="date"></div>
+    <div class="field"><span class="lbl">¿Quieres aprovechar algo de «${esc(state.eventName)}»?</span>
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="neMenus" style="margin-top:3px"><span>Copiar los menús (${state.menus.length})</span></label>
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="neTasks" style="margin-top:3px"><span>Copiar la lista de tareas (${state.tasks.length}), sin marcar y sin fechas</span></label>
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="nePeople" style="margin-top:3px"><span>Copiar la lista de personas (${state.people.length}) con su grupo y teléfono, como pendientes de confirmar y sin pagos ni mesas</span></label>
+      <span class="hint">Lo que no marques empieza vacío. El evento actual no cambia.</span></div>`,
+    `<button class="btn" type="button" id="neBack">Volver</button><button class="btn primary" type="button" id="neGo">Crear y abrir</button>`,
+    m => {
+      m.querySelector("#neBack").onclick = modalEvents;
+      m.querySelector("#neGo").onclick = async () => {
+        const name = m.querySelector("#neName").value.trim();
+        if (!name) { m.querySelector("#neName").focus(); return; }
+        if (!sb || !online) { toast("Para crear un evento hace falta conexión"); return; }
+        const b = m.querySelector("#neGo"); b.disabled = true; b.textContent = "Creando…";
+        const d = blank();
+        d.eventName = name; d.eventDate = m.querySelector("#neDate").value; d.payInfo = state.payInfo; d.defaultMethod = state.defaultMethod;
+        if (m.querySelector("#neMenus").checked) d.menus = state.menus.map(x => ({id: x.id, name: x.name, dishes: x.dishes, file: null}));
+        if (m.querySelector("#neTasks").checked) d.tasks = state.tasks.map(t => ({id: uid(), title: t.title, due: "", done: false, note: t.note}));
+        if (m.querySelector("#nePeople").checked) {
+          const keep = new Set(d.menus.map(x => x.id));
+          d.people = state.people.filter(p => !p.exempt).map(p => ({id: uid(), name: p.name, group: p.group, table: null, exempt: false, rsvp: "pending", diet: keep.has(p.diet) ? p.diet : "", dietNote: p.dietNote, phone: p.phone, quota: null, payments: []}));
+        }
+        d.updatedAt = Date.now();
+        const id = "ev-" + uid();
+        const { error } = await sb.from("evento").upsert({ id, data: d, updated_at: new Date().toISOString() });
+        if (error) { b.disabled = false; b.textContent = "Crear y abrir"; toast("No se pudo crear. Comprueba la conexión."); return; }
+        try { localStorage.setItem(lsKey(id), JSON.stringify(d)); } catch (e) {}
+        closeModal(); await switchEvent(id); toast("Evento creado");
+      };
+    });
+}
+
 /* Menús de la comida */
 const MENU_IDEAS = ["Vegetariano", "Vegano", "Sin gluten", "Sin lactosa", "Infantil"];
 function modalMenus() {
@@ -1698,7 +1797,7 @@ function modalSettings() {
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" type="button" id="stExport">Descargar copia</button><label class="btn sm"><input type="file" id="stImport" accept="application/json,.json" hidden>Restaurar copia…</label></div>
       <div id="stExportBox"></div></div>
     <div class="field"><span class="lbl">Sesión</span><div><button class="btn sm" type="button" id="stLogout">Cerrar sesión en este dispositivo</button></div></div>
-    <div class="field"><span class="lbl">Zona peligrosa</span><div><button class="btn sm danger" type="button" id="stWipe">Borrar todos los datos</button></div></div>
+    <div class="field"><span class="lbl">Zona peligrosa</span><div><button class="btn sm danger" type="button" id="stWipe">Borrar todos los datos de este evento</button></div></div>
     <div id="stConfirm"></div>`,
     `<button class="btn" type="button" data-close>Cerrar</button><button class="btn primary" type="button" id="stSave">Guardar</button>`,
     m => {
@@ -1714,7 +1813,7 @@ function modalSettings() {
         closeModal();
         if (dirty) { clearTimeout(saveTimer); flush(); }
         await saving;
-        try { localStorage.removeItem(LS_KEY); } catch (e) {}
+        try { Object.keys(localStorage).filter(k => k.startsWith(LS_KEY) && !k.endsWith("-tab")).forEach(k => localStorage.removeItem(k)); } catch (e) {}
         state = blank();
         if (sb) await sb.auth.signOut();
         showGate();
@@ -1765,6 +1864,7 @@ function toast(t) { const el = $("#toast"); el.textContent = t; el.hidden = fals
 /* ---------- eventos ---------- */
 $$(".tab").forEach(b => b.onclick = () => { ui.tab = b.dataset.tab; try { localStorage.setItem(LS_KEY + "-tab", ui.tab); } catch (e) {} render(); window.scrollTo({top: 0}); });
 $("#btnSettings").onclick = modalSettings;
+$("#btnEvents").onclick = modalEvents;
 $("#countdown").onclick = modalSettings;
 $("#taskAdd").addEventListener("submit", ev => {
   ev.preventDefault();
