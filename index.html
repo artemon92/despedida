@@ -222,6 +222,12 @@ textarea.inp{min-height:150px;resize:vertical}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{border:1px solid var(--line);background:var(--surface);border-radius:99px;padding:6px 12px;cursor:pointer;font-weight:700;font-size:.9rem}
 .chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.seg.rsvp4{display:grid!important;grid-template-columns:repeat(4,1fr)}
+@media (max-width:520px){.seg.rsvp4{grid-template-columns:1fr 1fr}}
+.menu-card{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:6px;background:var(--surface)}
+.menu-card .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.menu-card .dishes{white-space:pre-line;font-size:.92rem;color:var(--muted);overflow-wrap:anywhere}
+.menu-dishes{white-space:pre-line;background:var(--surface-2);border-radius:10px;padding:8px 12px;font-size:.9rem;color:var(--muted);overflow-wrap:anywhere}
 .who{border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .who-head{display:flex;gap:8px;align-items:center;padding:10px 12px;background:var(--surface-2);flex-wrap:wrap}
 .who-list{max-height:240px;overflow:auto;padding:4px 0}
@@ -455,6 +461,7 @@ html,body{margin:0}
         <button type="button" data-f="yes" aria-pressed="false">Confirmados</button>
         <button type="button" data-f="pending" aria-pressed="false">Pendientes</button>
         <button type="button" data-f="no" aria-pressed="false">No vienen</button>
+        <button type="button" data-f="gift" aria-pressed="false">Solo regalo</button>
         <button type="button" data-f="free" aria-pressed="false">Sin mesa</button>
       </div>
       <button class="btn primary" id="btnAddPeople" type="button">+ Añadir asistentes</button>
@@ -579,7 +586,12 @@ const DIETS = [
   {id: "other", name: "Otro menú", short: "Menú esp."},
 ];
 const diet = id => DIETS.find(d => d.id === id) || DIETS[0];
-const RSVP = {yes: {name: "Confirmado", cls: "ok"}, pending: {name: "Pendiente", cls: "warn"}, no: {name: "No viene", cls: "bad"}};
+const menuOf = id => state.menus.find(m => m.id === id) || state.menus[0];
+const menuShort = m => m.name.length > 16 ? m.name.slice(0, 15) + "…" : m.name;
+const RSVP = {yes: {name: "Confirmado", cls: "ok"}, pending: {name: "Pendiente", cls: "warn"}, no: {name: "No viene", cls: "bad"}, gift: {name: "Solo regalo", cls: "gold"}};
+const RSVP_KEYS = ["yes", "pending", "no", "gift"];
+// Versión de los datos. Si en la nube hay datos de una versión más nueva, esta página no los toca.
+const DATA_V = 3;
 const METHODS = ["Bizum", "Efectivo", "Transferencia"];
 const TASK_TEMPLATE = [
   [-60, "Reservar el restaurante o el local"], [-50, "Contratar el DJ o la música"], [-45, "Reservar el hotel"],
@@ -607,19 +619,34 @@ const fmtNum = n => String(Math.round((n || 0) * 100) / 100).replace(".", ",");
 
 /* ---------- estado ---------- */
 const LS_KEY = "despedida-organizador-v1";
-const blank = () => ({v: 2, eventName: "Despedida de jubilación", eventDate: "", payInfo: "", defaultMethod: "Bizum", people: [], tables: [], expenses: [], tasks: [], updatedAt: 0});
+const blank = () => ({v: DATA_V, eventName: "Despedida de jubilación", eventDate: "", payInfo: "", defaultMethod: "Bizum", menus: [{id: "", name: "Menú general", dishes: "", file: null}], people: [], tables: [], expenses: [], tasks: [], updatedAt: 0});
+const cleanFile = f => f && f.id ? {id: f.id, name: f.name || "archivo", type: f.type || ""} : null;
+// Los menús usan como id el mismo valor que ya tenían las personas en "diet", así nadie pierde su menú.
+function normalizeMenus(s, people) {
+  let list;
+  if (Array.isArray(s.menus)) list = s.menus.filter(m => m && typeof m.id === "string").map(m => ({id: m.id, name: String(m.name || "Menú").trim() || "Menú", dishes: typeof m.dishes === "string" ? m.dishes : "", file: cleanFile(m.file)}));
+  else {
+    const used = new Set(people.map(p => p.diet).filter(Boolean));
+    list = DIETS.filter(d => d.id && used.has(d.id)).map(d => ({id: d.id, name: d.name, dishes: "", file: null}));
+  }
+  const seen = new Set(); list = list.filter(m => !seen.has(m.id) && seen.add(m.id));
+  const gen = list.find(m => m.id === "") || {id: "", name: "Menú general", dishes: "", file: null};
+  return [gen, ...list.filter(m => m.id !== "")];
+}
 function normalize(s) {
   const b = blank();
   s = s && typeof s === "object" ? s : {};
+  const people = Array.isArray(s.people) ? s.people : [];
   return {
-    v: 2,
+    v: DATA_V,
     eventName: typeof s.eventName === "string" && s.eventName.trim() ? s.eventName : b.eventName,
     eventDate: typeof s.eventDate === "string" ? s.eventDate : "",
     payInfo: typeof s.payInfo === "string" ? s.payInfo : "",
     defaultMethod: METHODS.includes(s.defaultMethod) ? s.defaultMethod : "Bizum",
+    menus: normalizeMenus(s, people.filter(p => p && typeof p.diet === "string")),
     people: Array.isArray(s.people) ? s.people.filter(p => p && p.id && p.name).map(p => ({
       id: p.id, name: String(p.name), group: p.group || "", table: p.table || null, exempt: !!p.exempt,
-      rsvp: ["yes", "pending", "no"].includes(p.rsvp) ? p.rsvp : "pending",
+      rsvp: RSVP_KEYS.includes(p.rsvp) ? p.rsvp : "pending",
       diet: typeof p.diet === "string" ? p.diet : "", dietNote: p.dietNote || "", phone: p.phone || "",
       payments: Array.isArray(p.payments) ? p.payments.filter(x => x && isFinite(+x.amount)).map(x => ({id: x.id || uid(), amount: Math.round(+x.amount * 100) / 100, method: x.method || "", date: x.date || ""})) : [],
       ...(p.paid && !Array.isArray(p.payments) ? {legacyPaid: true} : {}),
@@ -663,7 +690,7 @@ const assets = {
   async open(path) {
     const w = window.open("", "_blank");
     const { data, error } = await sb.storage.from(BUCKET).createSignedUrl(path, 300);
-    if (error || !data) { if (w) w.close(); toast("No se pudo abrir el ticket"); return; }
+    if (error || !data) { if (w) w.close(); toast("No se pudo abrir el archivo"); return; }
     if (w) w.location.href = data.signedUrl; else location.href = data.signedUrl;
   },
   remove(path) { return sb.storage.from(BUCKET).remove([path]).catch(() => {}); },
@@ -678,7 +705,8 @@ function writeLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(state)
 function persist() {
   state.updatedAt = Date.now();
   writeLocal();
-  if (sb && !readOnly) {
+  if (sb && readOnly) { setStatus("error"); return; }
+  if (sb) {
     dirty = true; setStatus("saving");
     clearTimeout(saveTimer); saveTimer = setTimeout(flush, 600);
   } else setStatus("local");
@@ -706,6 +734,11 @@ async function pull() {
   online = true;
   if (!data) {
     if (state.people.length || state.tables.length || state.expenses.length) persist(); else setStatus("cloud");
+    return;
+  }
+  if (data.data && +data.data.v > DATA_V) {
+    readOnly = true; clearTimeout(saveTimer); dirty = false;
+    showBanner("Hay una versión nueva de esta página. Recárgala para seguir (los cambios no se guardarán hasta entonces).");
     return;
   }
   const remote = normalize(data.data);
@@ -750,13 +783,18 @@ async function start() {
 }
 
 /* ---------- cálculos ---------- */
-const coming = p => p.rsvp !== "no";
-const payers = () => state.people.filter(p => coming(p) && !p.exempt);
-function participants(e) { const ex = new Set(e.excluded); return payers().filter(p => !ex.has(p.id)); }
+const coming = p => p.rsvp === "yes" || p.rsvp === "pending";
+// "Solo regalo": no viene a la despedida, pero pone su parte de los gastos de la categoría Regalos.
+const giftOnly = p => p.rsvp === "gift";
+const isGiftExp = e => e.cat === "regalo";
+const inExpense = (p, e) => coming(p) || (giftOnly(p) && (!e || isGiftExp(e)));
+const payers = e => state.people.filter(p => !p.exempt && inExpense(p, e));
+function participants(e) { const ex = new Set(e.excluded); return payers(e).filter(p => !ex.has(p.id)); }
 function owes(p) {
-  if (p.exempt || !coming(p)) return {total: 0, items: []};
+  if (p.exempt || !inExpense(p)) return {total: 0, items: []};
   let total = 0; const items = [];
   for (const e of state.expenses) {
+    if (!inExpense(p, e)) continue;
     const parts = participants(e);
     const inIt = !e.excluded.includes(p.id);
     const share = parts.length ? e.amount / (inIt ? parts.length : parts.length + 1) : e.amount;
@@ -786,8 +824,8 @@ function render() {
   const yes = att.filter(p => p.rsvp === "yes").length;
   const seated = att.filter(p => p.table && tableOf(p.table)).length;
   const total = totalSpent();
-  const pay = payers().length;
-  const avg = pay ? state.people.reduce((s, p) => s + owes(p).total, 0) / pay : 0;
+  const att2 = payers().filter(coming);
+  const avg = att2.length ? att2.reduce((s, p) => s + owes(p).total, 0) / att2.length : 0;
   $("#sPeople").textContent = att.length;
   $("#sPeopleLbl").textContent = `asistentes · ${yes} confirmados`;
   $("#sSeated").textContent = seated + " / " + att.length;
@@ -835,30 +873,30 @@ function renderPeople() {
     el.innerHTML = emptyState("Empieza por la lista de invitados", "Puedes escribir los nombres uno a uno o pegar una lista entera (por ejemplo, copiada de WhatsApp o de un Excel), un nombre por línea.", "Añadir asistentes", "addPeople");
     return;
   }
-  const c = {yes: 0, pending: 0, no: 0}; state.people.forEach(p => c[p.rsvp]++);
+  const c = {yes: 0, pending: 0, no: 0, gift: 0}; state.people.forEach(p => c[p.rsvp]++);
   const conf = state.people.filter(p => p.rsvp === "yes");
-  const menus = DIETS.map(d => ({d, n: conf.filter(p => diet(p.diet).id === d.id).length})).filter(x => x.n);
+  const menus = state.menus.map(d => ({d, n: conf.filter(p => menuOf(p.diet).id === d.id).length})).filter(x => x.n);
   const notes = conf.filter(p => p.dietNote).length;
   sum.hidden = false;
   const pl = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-  sum.innerHTML = `<div class="line"><span class="pill ok">${pl(c.yes, "confirmado", "confirmados")}</span><span class="pill warn">${pl(c.pending, "pendiente", "pendientes")}</span><span class="pill bad">${pl(c.no, "no viene", "no vienen")}</span></div>
+  sum.innerHTML = `<div class="line"><span class="pill ok">${pl(c.yes, "confirmado", "confirmados")}</span><span class="pill warn">${pl(c.pending, "pendiente", "pendientes")}</span><span class="pill bad">${pl(c.no, "no viene", "no vienen")}</span>${c.gift ? `<span class="pill gold">${c.gift} solo regalo</span>` : ""}</div>
     <div class="line small"><span class="muted">Menús de los confirmados:</span>${menus.length ? menus.map(x => `<span class="pill ${x.d.id ? "gold" : ""}">${x.n} ${esc(x.d.name.toLowerCase())}</span>`).join("") : `<span class="muted">nadie confirmado todavía</span>`}${notes ? `<span class="pill">${notes} con alergias o notas</span>` : ""}</div>
-    <div><button class="btn sm" type="button" data-act="copyRestaurant">Copiar recuento para el restaurante</button></div>`;
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm" type="button" data-act="menus">Menús de la comida (${state.menus.length})</button><button class="btn sm" type="button" data-act="copyRestaurant">Copiar recuento para el restaurante</button></div>`;
   let list = state.people.slice().sort(byName);
-  if (["yes", "pending", "no"].includes(ui.peopleFilter)) list = list.filter(p => p.rsvp === ui.peopleFilter);
+  if (RSVP_KEYS.includes(ui.peopleFilter)) list = list.filter(p => p.rsvp === ui.peopleFilter);
   if (ui.peopleFilter === "free") list = list.filter(isFree);
   if (q) list = list.filter(p => norm(p.name + " " + p.group + " " + p.dietNote).includes(q));
   const free = state.people.filter(isFree).length;
   const att = state.people.filter(coming).length;
   el.innerHTML = `<div class="listhead"><h2>${att} asistentes</h2><span class="small muted">${free ? free + " sin mesa todavía" : "Todos tienen mesa"}</span></div>` +
     (list.length ? `<div class="list">${list.map(p => {
-      const on = coming(p), t = on && p.table && tableOf(p.table), d = diet(p.diet);
+      const on = coming(p), t = on && p.table && tableOf(p.table), d = menuOf(p.diet);
       return `<div class="row ${t ? "done" : ""} ${on ? "" : "off"}" tabindex="0" role="button" data-edit-person="${p.id}" aria-label="Editar ${esc(p.name)}">
         <span class="check" aria-hidden="true"></span>
         <span class="name">${esc(p.name)}</span>
         <span class="meta">
-          ${p.rsvp === "pending" ? `<span class="quick"><button type="button" data-rsvp="yes" data-pid="${p.id}">✓ Viene</button><button type="button" data-rsvp="no" data-pid="${p.id}">✗ No viene</button></span>` : `<span class="pill ${RSVP[p.rsvp].cls}">${RSVP[p.rsvp].name}</span>`}
-          ${d.id ? `<span class="pill gold">${esc(d.name)}</span>` : ""}
+          ${p.rsvp === "pending" ? `<span class="quick"><button type="button" data-rsvp="yes" data-pid="${p.id}">✓ Viene</button><button type="button" data-rsvp="no" data-pid="${p.id}">✗ No viene</button><button type="button" data-rsvp="gift" data-pid="${p.id}">🎁 Solo regalo</button></span>` : `<span class="pill ${RSVP[p.rsvp].cls}">${RSVP[p.rsvp].name}</span>`}
+          ${on && d.id ? `<span class="pill gold">${esc(d.name)}</span>` : ""}
           ${p.dietNote ? `<span class="pill gold" title="${esc(p.dietNote)}">Alergia / nota</span>` : ""}
           ${p.group ? `<span class="pill">${esc(p.group)}</span>` : ""}
           ${p.exempt ? `<span class="pill gold">No paga</span>` : ""}
@@ -874,11 +912,11 @@ function restaurantText() {
   L.push(`Comensales confirmados: ${conf.length}`);
   if (pend) L.push(`Pendientes de confirmar: ${pend}`);
   L.push("", "Menús:");
-  DIETS.forEach(d => { const n = conf.filter(p => diet(p.diet).id === d.id).length; if (n) L.push(`- ${d.name}: ${n}`); });
-  const special = conf.filter(p => p.diet || p.dietNote).sort(byName);
+  state.menus.forEach(d => { const n = conf.filter(p => menuOf(p.diet).id === d.id).length; if (n) L.push(`- ${d.name}: ${n}`); });
+  const special = conf.filter(p => menuOf(p.diet).id || p.dietNote).sort(byName);
   if (special.length) {
     L.push("", "Menús especiales y alergias:");
-    special.forEach(p => { const t = p.table && tableOf(p.table); L.push(`- ${p.name}${t ? " (" + t.name + ")" : ""}: ${[p.diet ? diet(p.diet).name : "", p.dietNote ? p.dietNote.charAt(0).toUpperCase() + p.dietNote.slice(1) : ""].filter(Boolean).join(". ")}`); });
+    special.forEach(p => { const t = p.table && tableOf(p.table); L.push(`- ${p.name}${t ? " (" + t.name + ")" : ""}: ${[menuOf(p.diet).id ? menuOf(p.diet).name : "", p.dietNote ? p.dietNote.charAt(0).toUpperCase() + p.dietNote.slice(1) : ""].filter(Boolean).join(". ")}`); });
   }
   if (state.tables.length) L.push("", `Mesas: ${state.tables.length} (${state.tables.map(t => t.name + ": " + seatedIn(t.id).length).join(", ")})`);
   return L.join("\n");
@@ -947,7 +985,7 @@ function renderTables() {
       return `<div class="panel tcard ${sel ? "target" : ""} ${full ? "full" : ""}" data-table="${t.id}" ${sel ? `tabindex="0" role="button" aria-label="Sentar en ${esc(t.name)}"` : ""}>
         <div class="thead"><h3>${esc(t.name)}</h3><span class="pill ${full ? "ok" : ""}">${ppl.length}/${t.cap}</span><span style="margin-left:auto;display:flex;gap:4px">${!full && !sel ? `<button class="btn sm" type="button" data-seat-to="${t.id}">+ Sentar</button>` : ""}<button class="btn ghost sm" type="button" data-edit-table="${t.id}" aria-label="Editar ${esc(t.name)}">Editar</button></span></div>
         ${tableSVG(t)}
-        ${ppl.length ? `<ul class="tnames">${ppl.map(p => `<li draggable="true" data-drag-person="${p.id}"><span>${esc(p.name)}</span>${p.diet ? `<span class="pill gold">${esc(diet(p.diet).short)}</span>` : ""}${p.exempt ? `<span class="pill gold">No paga</span>` : ""}<button type="button" data-unseat="${p.id}" aria-label="Quitar a ${esc(p.name)} de la mesa" title="Quitar de la mesa">×</button></li>`).join("")}</ul>` : `<p class="small muted" style="margin:0;text-align:center">Mesa vacía</p>`}
+        ${ppl.length ? `<ul class="tnames">${ppl.map(p => `<li draggable="true" data-drag-person="${p.id}"><span>${esc(p.name)}</span>${menuOf(p.diet).id ? `<span class="pill gold">${esc(menuShort(menuOf(p.diet)))}</span>` : ""}${p.exempt ? `<span class="pill gold">No paga</span>` : ""}<button type="button" data-unseat="${p.id}" aria-label="Quitar a ${esc(p.name)} de la mesa" title="Quitar de la mesa">×</button></li>`).join("")}</ul>` : `<p class="small muted" style="margin:0;text-align:center">Mesa vacía</p>`}
       </div>`;
     }).join("");
   }
@@ -1039,7 +1077,7 @@ function renderExpenses() {
   }).join("")}</div>`;
   const sorted = state.expenses.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   list.innerHTML = sorted.map(e => {
-    const c = cat(e.cat), parts = participants(e), allPay = payers().length;
+    const c = cat(e.cat), parts = participants(e), allPay = payers(e).length;
     return `<div class="exp">
       <span class="catdot" style="background:${c.color}22;color:${c.color}">${esc(c.name.slice(0, 2))}</span>
       <span class="concept">${esc(e.concept)}</span>
@@ -1068,7 +1106,7 @@ function supplierPill(e) {
 
 /* Cuentas */
 function renderAccounts() {
-  const rows = state.people.filter(p => coming(p) || p.payments.length).sort(byName).map(p => ({p, o: owes(p), ...balance(p)}));
+  const rows = state.people.filter(p => inExpense(p) || p.payments.length).sort(byName).map(p => ({p, o: owes(p), ...balance(p)}));
   const total = round2(rows.reduce((s, r) => s + r.o.total, 0));
   const got = collected(), sup = paidToSuppliers(), cash = round2(got - sup);
   const pend = round2(rows.reduce((s, r) => s + Math.max(0, r.left), 0));
@@ -1092,7 +1130,7 @@ function renderAccounts() {
     const done = o.total > 0 && Math.abs(left) <= 0.004;
     let owe;
     if (p.exempt) owe = `—<small>invitada</small>`;
-    else if (left < -0.004) owe = `<span style="color:var(--bad)">${money(-left)}</span><small>a devolver${coming(p) ? "" : " · no viene"}</small>`;
+    else if (left < -0.004) owe = `<span style="color:var(--bad)">${money(-left)}</span><small>a devolver${inExpense(p) ? "" : " · no viene"}</small>`;
     else if (done) owe = `${money(o.total)}<small>pagado</small>`;
     else if (paid > 0) owe = `${money(left)}<small>falta · pagó ${money(paid)}</small>`;
     else owe = `${money(left)}${o.total ? "" : "<small>sin gastos</small>"}`;
@@ -1105,7 +1143,7 @@ function renderAccounts() {
         <button type="button" class="acc-row" data-toggle-acc="${p.id}" aria-expanded="${open}">
           <svg class="icon chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
           <span style="font-weight:700;min-width:0;overflow-wrap:anywhere">${esc(p.name)}</span>
-          ${p.exempt ? `<span class="pill gold">Invitada · no paga</span>` : ""}
+          ${p.exempt ? `<span class="pill gold">Invitada · no paga</span>` : giftOnly(p) ? `<span class="pill gold">Solo regalo</span>` : ""}
           <span class="owe">${owe}</span>
         </button>
         ${p.exempt || o.total <= 0 ? "" : `<button type="button" class="paid" data-paid="${p.id}" aria-pressed="${done}" aria-label="${done ? "Pagado del todo" : "Apuntar que ha pagado lo que falta"}"><span class="box" aria-hidden="true"></span>Pagado</button>`}
@@ -1117,9 +1155,9 @@ function renderAccounts() {
           <div class="pay-form"><input class="inp num" id="pa-${p.id}" inputmode="decimal" placeholder="Importe" value="${left > 0.004 ? fmtNum(left) : ""}" aria-label="Importe del pago"><select class="inp" id="pm-${p.id}" aria-label="Forma de pago">${METHODS.map(m => `<option ${m === state.defaultMethod ? "selected" : ""}>${m}</option>`).join("")}</select><button class="btn sm primary" type="button" data-addpay="${p.id}">Apuntar pago</button></div>
         </div>
         ${reminder}
-        ${p.exempt ? `<span class="small muted">Esta persona está marcada como invitada y no paga nada. Puedes cambiarlo desde Asistentes.</span>` : !coming(p) ? `<span class="small muted">Esta persona no viene, así que no paga nada.</span>` : o.items.length ? `<div class="sec-title">Gastos en los que participa</div>` +
+        ${p.exempt ? `<span class="small muted">Esta persona está marcada como invitada y no paga nada. Puedes cambiarlo desde Asistentes.</span>` : !inExpense(p) ? `<span class="small muted">Esta persona no viene, así que no paga nada.</span>` : o.items.length ? `<div class="sec-title">Gastos en los que participa</div>` +
         o.items.map(({e, inIt, share}) => `<div class="bk ${inIt ? "" : "off"}"><label><input type="checkbox" data-part="${p.id}" data-exp="${e.id}" ${inIt ? "checked" : ""}><span>${esc(e.concept)}</span></label><span class="v">${money(share)}</span></div>`).join("") +
-        `<span class="small muted">Desmarca un gasto si esta persona no participa en él. Su parte se reparte entre el resto.</span>` : `<span class="small muted">Aún no hay gastos.</span>`}
+        `<span class="small muted">${giftOnly(p) ? "No viene a la despedida: solo paga su parte de los gastos de Regalos. " : ""}Desmarca un gasto si esta persona no participa en él. Su parte se reparte entre el resto.</span>` : `<span class="small muted">${giftOnly(p) ? "No viene a la despedida y aún no hay gastos de la categoría Regalos." : "Aún no hay gastos."}</span>`}
       </div>` : ""}
     </div>`;
   }).join("") : `<div class="empty"><p>Nadie coincide con el filtro.</p></div>`;
@@ -1313,11 +1351,11 @@ function modalAddPeople() {
 
 function modalEditPerson(id) {
   const p = state.people.find(x => x.id === id); if (!p) return;
-  let rsvp = p.rsvp, dietId = p.diet;
+  let rsvp = p.rsvp, dietId = menuOf(p.diet).id;
   openModal("Editar asistente", `
     <div class="field"><label for="epName">Nombre</label><input class="inp" id="epName" value="${esc(p.name)}"></div>
-    <div class="field"><span class="lbl">Asistencia</span><div class="seg" id="epRsvp" style="display:flex">${["yes", "pending", "no"].map(k => `<button type="button" data-v="${k}" aria-pressed="${p.rsvp === k}" style="flex:1">${RSVP[k].name}</button>`).join("")}</div></div>
-    <div class="field"><span class="lbl">Menú</span><div class="chips" id="epDiet">${DIETS.map(d => `<button type="button" class="chip" data-v="${d.id}" aria-pressed="${p.diet === d.id}">${esc(d.name)}</button>`).join("")}</div></div>
+    <div class="field"><span class="lbl">Asistencia</span><div class="seg rsvp4" id="epRsvp">${RSVP_KEYS.map(k => `<button type="button" data-v="${k}" aria-pressed="${p.rsvp === k}">${RSVP[k].name}</button>`).join("")}</div><span class="hint" id="epRsvpHint"></span></div>
+    <div class="field"><span class="lbl">Menú</span><div class="chips" id="epDiet">${state.menus.map(d => `<button type="button" class="chip" data-v="${esc(d.id)}" aria-pressed="${menuOf(p.diet).id === d.id}">${esc(d.name)}</button>`).join("")}<button type="button" class="chip" data-act="menus" style="border-style:dashed">Gestionar menús…</button></div><div id="epDishes"></div></div>
     <div class="field"><label for="epNote">Alergias o notas para el restaurante (opcional)</label><input class="inp" id="epNote" value="${esc(p.dietNote)}" placeholder="Ej.: alergia a los frutos secos"></div>
     <div class="two">
       <div class="field"><label for="epGroup">Servicio o grupo</label><input class="inp" id="epGroup" list="dlGroups" value="${esc(p.group)}">${groupsDatalist()}</div>
@@ -1328,21 +1366,102 @@ function modalEditPerson(id) {
     <div id="epConfirm"></div>`,
     `<button class="btn danger left" type="button" id="epDel">Eliminar</button><button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="button" id="epSave">Guardar</button>`,
     m => {
-      m.querySelector("#epRsvp").onclick = ev => { const b = ev.target.closest("button"); if (!b) return; rsvp = b.dataset.v; $$("#epRsvp button", m).forEach(x => x.setAttribute("aria-pressed", String(x === b))); if (rsvp === "no") m.querySelector("#epTable").value = ""; };
-      m.querySelector("#epDiet").onclick = ev => { const b = ev.target.closest("button"); if (!b) return; dietId = b.dataset.v; $$("#epDiet button", m).forEach(x => x.setAttribute("aria-pressed", String(x === b))); };
+      const rsvpHint = () => { m.querySelector("#epRsvpHint").textContent = rsvp === "gift" ? "No viene a la despedida, pero pone su parte de los gastos de la categoría Regalos." : rsvp === "no" ? "No viene ni paga nada." : ""; };
+      const dishes = () => { const d = menuOf(dietId); m.querySelector("#epDishes").innerHTML = d.dishes.trim() ? `<div class="menu-dishes" style="margin-top:8px">${esc(d.dishes.trim())}</div>` : ""; };
+      rsvpHint(); dishes();
+      m.querySelector("#epRsvp").onclick = ev => { const b = ev.target.closest("button"); if (!b) return; rsvp = b.dataset.v; $$("#epRsvp button", m).forEach(x => x.setAttribute("aria-pressed", String(x === b))); if (rsvp === "no" || rsvp === "gift") m.querySelector("#epTable").value = ""; rsvpHint(); };
+      m.querySelector("#epDiet").onclick = ev => { const b = ev.target.closest("button[data-v]"); if (!b) return; dietId = b.dataset.v; $$("#epDiet button[data-v]", m).forEach(x => x.setAttribute("aria-pressed", String(x === b))); dishes(); };
       m.querySelector("#epSave").onclick = () => {
         const name = m.querySelector("#epName").value.trim();
         if (!name) { m.querySelector("#epName").focus(); return; }
         commit(() => {
           p.name = name; p.group = m.querySelector("#epGroup").value.trim(); p.rsvp = rsvp; p.diet = dietId;
           p.dietNote = m.querySelector("#epNote").value.trim(); p.phone = m.querySelector("#epPhone").value.trim();
-          p.table = rsvp === "no" ? null : (m.querySelector("#epTable").value || null); p.exempt = m.querySelector("#epExempt").checked;
+          p.table = rsvp === "no" || rsvp === "gift" ? null : (m.querySelector("#epTable").value || null); p.exempt = m.querySelector("#epExempt").checked;
         });
         closeModal(); toast("Guardado");
       };
       m.querySelector("#epDel").onclick = () => inlineConfirm(m, "#epConfirm", `¿Eliminar a <b>${esc(p.name)}</b> de la lista? Se quitará de su mesa y de los gastos${p.payments.length ? ", y también se borrarán sus pagos apuntados" : ""}.`, "Sí, eliminar", () => {
         commit(() => { state.people = state.people.filter(x => x.id !== p.id); state.expenses.forEach(e => e.excluded = e.excluded.filter(x => x !== p.id)); });
         closeModal(); toast("Eliminado");
+      });
+    });
+}
+
+/* Menús de la comida */
+const MENU_IDEAS = ["Vegetariano", "Vegano", "Sin gluten", "Sin lactosa", "Infantil"];
+function modalMenus() {
+  const conf = state.people.filter(p => p.rsvp === "yes"), att = state.people.filter(coming);
+  const ideas = MENU_IDEAS.filter(n => !state.menus.some(m => norm(m.name) === norm(n)));
+  openModal("Menús de la comida", `
+    <p class="small muted" style="margin:0">Crea los menús que va a haber y asígnaselos a cada asistente desde su ficha. Puedes apuntar los platos o subir una foto o PDF de la carta, solo como información.</p>
+    <div style="display:flex;flex-direction:column;gap:10px">${state.menus.map(d => {
+      const n = conf.filter(p => menuOf(p.diet).id === d.id).length, nAll = att.filter(p => menuOf(p.diet).id === d.id).length;
+      return `<div class="menu-card"><div class="top"><b style="overflow-wrap:anywhere">${esc(d.name)}</b>${d.id ? "" : `<span class="pill">Por defecto</span>`}<span class="pill ok">${n} confirmados</span>${nAll > n ? `<span class="pill warn">${nAll - n} pendientes</span>` : ""}<button class="btn sm" type="button" data-menu-edit="${esc(d.id)}" style="margin-left:auto">Editar</button></div>
+        ${d.dishes.trim() ? `<div class="dishes">${esc(d.dishes.trim())}</div>` : `<span class="small muted">Sin platos apuntados.</span>`}
+        ${d.file ? `<div><button class="btn ghost sm ticket" type="button" data-ticket="${esc(d.file.id)}">Ver ${esc(d.file.name)}</button></div>` : ""}</div>`;
+    }).join("")}</div>
+    <div class="field"><span class="lbl">Añadir un menú</span>
+      <div style="display:flex;gap:8px"><input class="inp" id="mnNew" placeholder="Ej.: Menú vegetariano, Menú infantil…" style="flex:1"><button class="btn primary" type="button" id="mnAdd">Añadir</button></div>
+      ${ideas.length ? `<div class="chips" id="mnIdeas">${ideas.map(n => `<button type="button" class="chip" data-v="${esc(n)}">+ ${esc(n)}</button>`).join("")}</div>` : ""}</div>`,
+    `<button class="btn primary" type="button" data-close>Listo</button>`,
+    m => {
+      const add = name => {
+        name = name.trim(); if (!name) { m.querySelector("#mnNew").focus(); return; }
+        if (state.menus.some(x => norm(x.name) === norm(name))) { toast("Ese menú ya existe"); return; }
+        commit(() => state.menus.push({id: uid(), name, dishes: "", file: null}));
+        toast("Menú añadido"); modalMenus();
+      };
+      m.querySelector("#mnAdd").onclick = () => add(m.querySelector("#mnNew").value);
+      m.querySelector("#mnNew").addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); add(ev.target.value); } });
+      const ib = m.querySelector("#mnIdeas"); if (ib) ib.onclick = ev => { const b = ev.target.closest("button"); if (b) add(b.dataset.v); };
+      m.addEventListener("click", ev => { const b = ev.target.closest("[data-menu-edit]"); if (b) modalMenu(b.dataset.menuEdit); });
+    });
+}
+function modalMenu(id) {
+  const d0 = state.menus.find(x => x.id === id); if (!d0) return;
+  let file = d0.file, removedFile = null;
+  const users = state.people.filter(p => p.diet === d0.id && d0.id);
+  openModal("Editar menú", `
+    <div class="field"><label for="mnName">Nombre</label><input class="inp" id="mnName" value="${esc(d0.name)}"></div>
+    <div class="field"><label for="mnDishes">Platos (opcional)</label><textarea class="inp" id="mnDishes" rows="6" placeholder="Entrante: …&#10;Principal: …&#10;Postre: …">${esc(d0.dishes)}</textarea><span class="hint">Solo como información: un plato por línea.</span></div>
+    <div class="field"><span class="lbl">Foto o PDF de la carta (opcional)</span><div id="mnFile"></div></div>
+    ${d0.id ? "" : `<span class="small muted">Este es el menú por defecto: lo tienen todos los asistentes a los que no les hayas puesto otro. Se puede cambiar el nombre, pero no borrar.</span>`}
+    <div id="mnConfirm"></div>`,
+    `${d0.id ? `<button class="btn danger left" type="button" id="mnDel">Eliminar</button>` : ""}<button class="btn" type="button" id="mnBack">Volver</button><button class="btn primary" type="button" id="mnSave">Guardar</button>`,
+    m => {
+      const drawFile = msg => {
+        const box = m.querySelector("#mnFile");
+        if (file) {
+          box.innerHTML = `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button class="btn ghost sm ticket" type="button" data-ticket="${esc(file.id)}">${esc(file.name)}</button><button class="btn sm danger" type="button" id="mnFileDel">Quitar</button></div>`;
+          box.querySelector("#mnFileDel").onclick = () => { removedFile = file; file = null; drawFile(); };
+        } else if (assets.ok()) {
+          box.innerHTML = `<label class="btn sm" style="width:fit-content"><input type="file" id="mnUp" accept="image/*,application/pdf" hidden>Subir foto o PDF</label><span class="hint">${msg || "Máximo 20 MB."}</span>`;
+          box.querySelector("#mnUp").onchange = async ev => {
+            const f = ev.target.files[0]; if (!f) return;
+            if (f.size > 20 * 1024 * 1024) { drawFile("El archivo pesa más de 20 MB."); return; }
+            box.innerHTML = `<span class="hint">Subiendo…</span>`;
+            try { const path = await assets.upload(f); file = {id: path, name: f.name || "carta", type: f.type || ""}; drawFile(); }
+            catch (e) { drawFile("No se pudo subir. Inténtalo de nuevo."); }
+          };
+        } else box.innerHTML = `<span class="hint">Para subir archivos hace falta conexión a internet.</span>`;
+      };
+      drawFile();
+      m.querySelector("#mnBack").onclick = () => { if (file && file !== d0.file && sb) assets.remove(file.id); modalMenus(); };
+      m.querySelector("#mnSave").onclick = () => {
+        const name = m.querySelector("#mnName").value.trim();
+        if (!name) { m.querySelector("#mnName").focus(); return; }
+        if (state.menus.some(x => x.id !== d0.id && norm(x.name) === norm(name))) { toast("Ya hay otro menú con ese nombre"); return; }
+        const d = state.menus.find(x => x.id === d0.id); if (!d) { modalMenus(); return; }
+        commit(() => { d.name = name; d.dishes = m.querySelector("#mnDishes").value.replace(/\s+$/, ""); d.file = file; });
+        if (removedFile && sb && (!file || file.id !== removedFile.id)) assets.remove(removedFile.id);
+        toast("Menú guardado"); modalMenus();
+      };
+      const del = m.querySelector("#mnDel");
+      if (del) del.onclick = () => inlineConfirm(m, "#mnConfirm", `¿Eliminar el menú <b>${esc(d0.name)}</b>?${users.length ? ` ${users.length === 1 ? "La persona que lo tenía pasará" : `Las ${users.length} personas que lo tenían pasarán`} al menú «${esc(state.menus[0].name)}».` : ""}`, "Sí, eliminar", () => {
+        commit(() => { state.menus = state.menus.filter(x => x.id !== d0.id); state.people.forEach(p => { if (p.diet === d0.id) p.diet = ""; }); });
+        [d0.file, file !== d0.file ? file : null].forEach(f => { if (f && sb) assets.remove(f.id); });
+        toast("Menú eliminado"); modalMenus();
       });
     });
 }
@@ -1470,13 +1589,13 @@ function modalExpense(id) {
       <div class="who"><div class="who-head"><b id="exWhoCount"></b><span style="margin-left:auto;display:flex;gap:6px"><button class="btn sm" type="button" id="exAll">Todos</button><button class="btn sm" type="button" id="exNone">Nadie</button></span>
         <input class="search" id="exWhoQ" type="search" placeholder="Buscar para quitar a alguien…" style="padding:8px 12px" aria-label="Buscar persona"></div>
       <div class="who-list" id="exWho"></div></div>
-      <span class="hint">Por defecto pagan todos. Desmarca a quien no participe en este gasto (por ejemplo, quien no pone para el regalo).</span></div>
+      <span class="hint">Por defecto pagan todos los que vienen. En los gastos de <b>Regalos</b> también pagan los que están como «Solo regalo». Desmarca a quien no participe en este gasto.</span></div>
     <div id="exConfirm"></div>`,
     `${e0 ? `<button class="btn danger left" type="button" id="exDel">Eliminar</button>` : ""}<button class="btn" type="button" data-close>Cancelar</button><button class="btn primary" type="button" id="exSave">Guardar gasto</button>`,
     m => {
       let catId = e.cat;
-      $$("#exCat .chip", m).forEach(c => c.onclick = () => { catId = c.dataset.cat; $$("#exCat .chip", m).forEach(x => x.setAttribute("aria-pressed", String(x === c))); });
-      const pay = payers().sort(byName);
+      let pay = payers({cat: catId}).sort(byName);
+      $$("#exCat .chip", m).forEach(c => c.onclick = () => { catId = c.dataset.cat; $$("#exCat .chip", m).forEach(x => x.setAttribute("aria-pressed", String(x === c))); pay = payers({cat: catId}).sort(byName); drawWho(); });
       const drawWho = () => {
         const q = norm(m.querySelector("#exWhoQ").value);
         const list = q ? pay.filter(p => norm(p.name).includes(q)) : pay;
@@ -1658,11 +1777,12 @@ document.addEventListener("click", ev => {
     if (a === "unseatSel" && ui.selected) unseat(ui.selected);
     if (a === "copyRestaurant") copyText(restaurantText(), "Recuento copiado. Pégalo en WhatsApp o en un correo al restaurante.", "Recuento para el restaurante");
     if (a === "loadTemplate") modalTemplate();
+    if (a === "menus") modalMenus();
     if (a === "clearTasks") modalClearTasks();
     return;
   }
   const rv = t.closest("[data-rsvp]");
-  if (rv) { const p = state.people.find(x => x.id === rv.dataset.pid); if (p) { commit(() => { p.rsvp = rv.dataset.rsvp; if (p.rsvp === "no") p.table = null; }); toast(p.name + (p.rsvp === "yes" ? ": confirmado" : ": no viene")); } return; }
+  if (rv) { const p = state.people.find(x => x.id === rv.dataset.pid); if (p) { commit(() => { p.rsvp = rv.dataset.rsvp; if (!coming(p)) p.table = null; }); toast(p.name + (p.rsvp === "yes" ? ": confirmado" : p.rsvp === "gift" ? ": solo regalo" : ": no viene")); } return; }
   const td = t.closest("[data-tdone]"); if (td) { const k = state.tasks.find(x => x.id === td.dataset.tdone); if (k) commit(() => { k.done = !k.done; }); return; }
   const te = t.closest("[data-tedit]"); if (te) return modalTask(te.dataset.tedit);
   const ap = t.closest("[data-addpay]");
