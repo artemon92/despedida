@@ -346,7 +346,7 @@ button,a,.row,.seat,.tcard,label{-webkit-tap-highlight-color:transparent;touch-a
   .toolbar .seg{width:100%;display:flex}
   .toolbar .seg button{flex:1;padding:9px 6px}
   .toolbar .seg.scroll button{flex:0 0 auto;padding:9px 12px}
-  #btnSuggest,#btnCopy{width:100%}
+  #btnSuggest,#btnExport,#btnCopy{width:100%}
   .toast{bottom:calc(150px + env(safe-area-inset-bottom,0px))}
 
   .row{padding:12px}
@@ -490,6 +490,7 @@ html,body{margin:0}
         <button type="button" data-v="list" aria-pressed="false">Lista</button>
       </div>
       <button class="btn" id="btnSuggest" type="button">Repartir mesas por servicio</button>
+      <button class="btn" id="btnExport" type="button">Exportar para el restaurante</button>
       <button class="btn primary" id="btnAddTable" type="button">+ Añadir mesa</button>
     </div>
     <div id="selbar" class="selbar" hidden></div>
@@ -1765,6 +1766,114 @@ function modalSuggest() {
     });
 }
 
+/* Exportar mesas para el restaurante */
+function exportData() {
+  const tables = state.tables.map(t => ({name: t.name, people: seatedIn(t.id)})).filter(t => t.people.length);
+  const seatedPending = tables.flatMap(t => t.people).filter(p => p.rsvp === "pending");
+  const confirmed = state.people.filter(p => p.rsvp === "yes");
+  const noTable = confirmed.filter(isFree).sort(byName);
+  const pendingOut = state.people.filter(p => p.rsvp === "pending" && isFree(p)).length;
+  return {tables, seatedPending, confirmed, noTable, pendingOut};
+}
+function menuCounts(list) {
+  return state.menus.map(d => ({d, n: list.filter(p => menuOf(p.diet).id === d.id).length})).filter(x => x.n);
+}
+const capFirst = t => t.charAt(0).toUpperCase() + t.slice(1);
+const pendText = n => `${n} ${n === 1 ? "pendiente" : "pendientes"}`;
+const personLabel = p => `${p.name}${p.rsvp === "pending" ? " (pendiente)" : ""}`;
+function menuLabel(p) { const m = menuOf(p.diet); return m.id ? m.name.toUpperCase() : m.name; }
+function exportHead(x) {
+  return `${x.tables.length} ${x.tables.length === 1 ? "mesa" : "mesas"} · ${x.confirmed.length} ${x.confirmed.length === 1 ? "comensal confirmado" : "comensales confirmados"}${x.seatedPending.length ? ` · ${pendText(x.seatedPending.length)} con mesa` : ""}`;
+}
+function exportMenuLines(x) {
+  return state.menus.map(d => {
+    const n = x.confirmed.filter(p => menuOf(p.diet).id === d.id).length, np = x.seatedPending.filter(p => menuOf(p.diet).id === d.id).length;
+    return n || np ? `${d.name}: ${n}${np ? ` (+${pendText(np)})` : ""}` : "";
+  }).filter(Boolean);
+}
+function exportText() {
+  const x = exportData();
+  const L = [state.eventName.toUpperCase() + (state.eventDate ? " · " + fmtDate(state.eventDate) : ""), exportHead(x), "", "RESUMEN DE MENÚS", ...exportMenuLines(x)];
+  x.tables.forEach(t => {
+    const np = t.people.filter(p => p.rsvp === "pending").length;
+    L.push("", `${t.name.toUpperCase()} · ${t.people.length} ${t.people.length === 1 ? "persona" : "personas"}${np ? ` (${pendText(np)})` : ""}`);
+    L.push("Menús: " + menuCounts(t.people).map(c => `${c.n} ${c.d.name}`).join(" · "));
+    t.people.forEach(p => L.push(`- ${personLabel(p)}: ${menuLabel(p)}${p.dietNote ? " · " + capFirst(p.dietNote) : ""}`));
+  });
+  if (x.noTable.length) {
+    L.push("", `SIN MESA ASIGNADA · ${x.noTable.length} ${x.noTable.length === 1 ? "persona" : "personas"}`);
+    x.noTable.forEach(p => L.push(`- ${p.name}: ${menuLabel(p)}${p.dietNote ? " · " + capFirst(p.dietNote) : ""}`));
+  }
+  if (x.pendingOut) L.push("", `No incluidos: ${x.pendingOut} ${x.pendingOut === 1 ? "pendiente" : "pendientes"} de confirmar sin mesa.`);
+  return L.join("\n");
+}
+// El ";" y la marca BOM hacen que Excel en español separe las columnas y respete las tildes.
+function csvCell(v) {
+  let t = String(v == null ? "" : v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+  return /[";\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+}
+function exportCSV() {
+  const x = exportData();
+  const row = (mesa, p) => [mesa, p.name, menuOf(p.diet).name, p.dietNote, RSVP[p.rsvp].name];
+  const rows = [["Mesa", "Persona", "Menú", "Alergias o notas", "Estado"]];
+  x.tables.forEach(t => t.people.forEach(p => rows.push(row(t.name, p))));
+  x.noTable.forEach(p => rows.push(row("Sin mesa", p)));
+  return "﻿" + rows.map(r => r.map(csvCell).join(";")).join("\r\n") + "\r\n";
+}
+function exportFileName(ext) {
+  const slug = norm(state.eventName).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "evento";
+  return `mesas-${slug}.${ext}`;
+}
+function exportPrintHTML() {
+  const x = exportData();
+  const line = p => `<li><span>${esc(personLabel(p))}</span> <b class="${menuOf(p.diet).id ? "sp" : "gen"}">${esc(menuOf(p.diet).name)}</b>${p.dietNote ? `<em>${esc(capFirst(p.dietNote))}</em>` : ""}</li>`;
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(exportFileName("pdf").replace(/\.pdf$/, ""))}</title><style>
+    body{font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#111;background:#fff;margin:24px}
+    h1{font-size:22px;margin:0 0 2px}.sub{color:#444;margin:0 0 14px}
+    .sum{border:1px solid #bbb;border-radius:8px;padding:10px 14px;margin-bottom:16px}.sum h2{font-size:14px;margin:0 0 4px}.sum p{margin:0}
+    .grid{columns:2;column-gap:16px}section{break-inside:avoid;border:1px solid #bbb;border-radius:8px;padding:10px 12px;margin:0 0 14px}
+    section h2{font-size:15px;margin:0}.m{color:#444;font-size:12px;margin:2px 0 6px}ul{list-style:none;margin:0;padding:0}li{padding:2px 0;border-top:1px solid #eee;overflow-wrap:anywhere}
+    b.gen{font-weight:400;color:#555;font-size:12px}b.sp{font-size:12px;text-transform:uppercase}em{display:block;font-size:12px;color:#444}
+    .warn{border-color:#111}button{font:inherit;padding:8px 14px;margin-bottom:14px}
+    @media (max-width:600px){.grid{columns:1}body{margin:16px}}@media print{button{display:none}body{margin:0}}
+    </style></head><body><button type="button" onclick="window.print()">Imprimir o guardar en PDF</button>
+    <h1>${esc(state.eventName)}</h1><p class="sub">${state.eventDate ? esc(fmtDate(state.eventDate)) + " · " : ""}${esc(exportHead(x))}</p>
+    <div class="sum"><h2>Resumen de menús</h2><p>${exportMenuLines(x).map(esc).join(" · ")}</p></div>
+    <div class="grid">${x.tables.map(t => { const np = t.people.filter(p => p.rsvp === "pending").length; return `<section><h2>${esc(t.name)} · ${t.people.length} ${t.people.length === 1 ? "persona" : "personas"}${np ? ` (${pendText(np)})` : ""}</h2><p class="m">${menuCounts(t.people).map(c => `${c.n} ${esc(c.d.name)}`).join(" · ")}</p><ul>${t.people.map(line).join("")}</ul></section>`; }).join("")}
+    ${x.noTable.length ? `<section class="warn"><h2>Sin mesa asignada · ${x.noTable.length}</h2><ul>${x.noTable.map(line).join("")}</ul></section>` : ""}</div>
+    ${x.pendingOut ? `<p class="sub">No incluidos: ${x.pendingOut} ${x.pendingOut === 1 ? "pendiente" : "pendientes"} de confirmar sin mesa.</p>` : ""}
+    </body></html>`;
+}
+function modalExport() {
+  const x = exportData();
+  if (!x.tables.length && !x.noTable.length) { toast("Todavía no hay nadie sentado ni confirmado"); return; }
+  const text = exportText();
+  openModal("Exportar para el restaurante", `
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn sm primary" type="button" id="exCopy">Copiar texto</button><button class="btn sm" type="button" id="exCsv">Descargar Excel</button><button class="btn sm" type="button" id="exPrint">Imprimir o guardar en PDF</button></div>
+    ${x.noTable.length ? `<p class="small" style="margin:0;color:var(--warn)">${x.noTable.length === 1 ? "Hay 1 persona confirmada sin mesa: sale" : `Hay ${x.noTable.length} personas confirmadas sin mesa: salen`} al final de la lista.</p>` : ""}
+    <div class="menu-dishes" id="exPreview" style="max-height:50vh;overflow:auto">${esc(text)}</div>`,
+    `<button class="btn" type="button" data-close>Cerrar</button>`,
+    m => {
+      m.querySelector("#exCopy").onclick = () => copyText(exportText(), "Copiado. Pégalo en WhatsApp o en un correo al restaurante.", "Mesas para el restaurante");
+      m.querySelector("#exCsv").onclick = () => {
+        try {
+          const url = URL.createObjectURL(new Blob([exportCSV()], {type: "text/csv;charset=utf-8"}));
+          const a = document.createElement("a"); a.href = url; a.download = exportFileName("csv");
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 2000);
+          toast("Archivo descargado. Se abre con Excel.");
+        } catch (e) { toast("No se pudo descargar. Usa «Copiar texto»."); }
+      };
+      m.querySelector("#exPrint").onclick = () => {
+        const w = window.open("", "_blank");
+        if (!w) { toast("El navegador ha bloqueado la ventana. Permite las ventanas emergentes."); return; }
+        w.document.open(); w.document.write(exportPrintHTML()); w.document.close();
+        w.focus(); setTimeout(() => { try { w.print(); } catch (e) {} }, 300);
+      };
+    });
+}
+
 function modalExpense(id) {
   const e0 = id ? state.expenses.find(x => x.id === id) : null;
   const e = e0 ? JSON.parse(JSON.stringify(e0)) : {id: uid(), concept: "", cat: "lugar", amount: 0, date: "", note: "", ticket: null, excluded: [], paidAmount: 0, dueDate: ""};
@@ -1952,6 +2061,7 @@ $("#fab").onclick = () => { if (ui.tab === "people") modalAddPeople(); else if (
 $("#btnAddPeople").onclick = modalAddPeople;
 $("#btnAddTable").onclick = modalAddTable;
 $("#btnSuggest").onclick = modalSuggest;
+$("#btnExport").onclick = modalExport;
 $("#btnAddExpense").onclick = () => modalExpense(null);
 $("#qPeople").addEventListener("input", renderPeople);
 $("#fMenu").addEventListener("change", e => { ui.menuFilter = e.target.value; renderPeople(); });
